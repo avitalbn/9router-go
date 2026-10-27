@@ -554,7 +554,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 	cw.stream = isStream
 	var lastErr *upstreamError
 	var retry passRetry
-	responseTimeout := h.comboResponseTimeout(comboName)
+	responseTimeout, timeoutGrace := h.comboTimeoutPolicy(comboName)
 	modelTimedOut := false
 	// Connections that failed with a retryable status this request; remaining
 	// combo models must not re-select them (same account = same 429 quota).
@@ -587,6 +587,8 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 		}
 		models = reordered
 	}
+	// A model that recently timed out sits out its grace period.
+	models = h.withoutBenchedModels(comboName, models, timeoutGrace)
 
 	// If every model fails, retry the whole pass once after a bounded
 	// Retry-After wait so a transient provider blip doesn't surface as a hard
@@ -848,6 +850,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				lastErr = comboTimeoutError()
 				modelTimedOut = true
 				entrySuccess = false
+				h.benchTimedOutModel(comboName, entry, timeoutGrace)
 			}
 
 			// A failed smart-pinned model loses its session pin, so the next
@@ -902,7 +905,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 	cw.stream = isStream
 	var lastErr *upstreamError
 	var retry passRetry
-	responseTimeout := h.comboResponseTimeout(comboName)
+	responseTimeout, timeoutGrace := h.comboTimeoutPolicy(comboName)
 	modelTimedOut := false
 
 	// Auto-capability-switch: convert body to JSON for detection
@@ -922,6 +925,8 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 		reordered := ReorderByCapabilities(models, required)
 		models = reordered
 	}
+	// A model that recently timed out sits out its grace period.
+	models = h.withoutBenchedModels(comboName, models, timeoutGrace)
 
 	// If every model fails, retry the whole pass once after a bounded
 	// Retry-After wait so a transient provider blip doesn't surface as a hard
@@ -1159,6 +1164,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 				lastErr = comboTimeoutError()
 				modelTimedOut = true
 				entrySuccess = false
+				h.benchTimedOutModel(comboName, entry, timeoutGrace)
 			}
 
 			// A failed smart-pinned model loses its session pin, so the next

@@ -7,6 +7,9 @@ import {
   isComboSorted,
   MAX_FIRST_TOKEN_TIMEOUT_MS,
   MAX_FIRST_TOKEN_TIMEOUT_SECONDS,
+  graceMsToSeconds,
+  graceSecondsToMs,
+  updateFirstTokenGrace,
   secondsToTimeoutMs,
   timeoutMsToSeconds,
   resolveComboStrategy,
@@ -375,5 +378,28 @@ describe('response timeout seconds conversion', () => {
   it('shows stored milliseconds as seconds', () => {
     expect(timeoutMsToSeconds(2500)).toBe(2.5)
     expect(timeoutMsToSeconds(undefined)).toBe(0)
+  })
+})
+
+describe('timeout grace period', () => {
+  it('treats blank as default (undefined) but 0 as an explicit immediate re-include', () => {
+    expect(graceSecondsToMs('')).toBeUndefined()
+    expect(graceSecondsToMs(null)).toBeUndefined()
+    expect(graceSecondsToMs('0')).toBe(0)
+    expect(graceSecondsToMs('90.5')).toBe(90500)
+    expect(graceSecondsToMs(-1)).toBeNull()
+    expect(graceSecondsToMs('x')).toBeNull()
+    expect(graceMsToSeconds(undefined)).toBe('')
+    expect(graceMsToSeconds(0)).toBe(0)
+    expect(graceMsToSeconds(90500)).toBe(90.5)
+  })
+  it('sets and clears only the grace key', () => {
+    const current = { primary: { firstTokenTimeoutMs: 2000, judgeModel: 'judge' } }
+    const set = updateFirstTokenGrace(current, 'primary', 60000)
+    expect(set.primary).toEqual({ firstTokenTimeoutMs: 2000, judgeModel: 'judge', firstTokenGraceMs: 60000 })
+    expect(current.primary).not.toHaveProperty('firstTokenGraceMs')
+    const cleared = updateFirstTokenGrace(set, 'primary', undefined)
+    expect(cleared.primary).toEqual(current.primary)
+    expect(updateFirstTokenGrace(current, 'primary', -5)).toBe(current)
   })
 })

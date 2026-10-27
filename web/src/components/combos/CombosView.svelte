@@ -9,6 +9,7 @@
     parseCapacityAdapterSettings,
     resolveComboStrategy,
     updateComboStrategy,
+    updateFirstTokenGrace,
     updateFirstTokenTimeout,
     updateJudgeModel,
     updateRouterModel,
@@ -285,7 +286,8 @@
     name: string,
     models: string[],
     matchRules: SmartRule[],
-    timeoutMs: number
+    timeoutMs: number,
+    graceMs: number | undefined
   ) {
     isSavingCombo = true
     comboSaveError = ''
@@ -295,11 +297,16 @@
       } else {
         await api.createCombo({ name, models, strategy: 'fallback', matchRules })
       }
-      // Strategies are keyed by combo name, so the timeout is written under the
-      // saved name, and only when it differs from what is stored: a plain save
-      // must not create an empty strategy row.
-      if ((comboStrategies[name]?.firstTokenTimeoutMs ?? 0) !== timeoutMs) {
-        const updated = updateFirstTokenTimeout(comboStrategies, name, timeoutMs)
+      // Strategies are keyed by combo name, so the timeout and grace are
+      // written under the saved name, in one patch, and only when they differ
+      // from what is stored: a plain save must not create an empty strategy row.
+      const stored = comboStrategies[name]
+      if ((stored?.firstTokenTimeoutMs ?? 0) !== timeoutMs || stored?.firstTokenGraceMs !== graceMs) {
+        const updated = updateFirstTokenGrace(
+          updateFirstTokenTimeout(comboStrategies, name, timeoutMs),
+          name,
+          graceMs
+        )
         await api.patchSettings({ comboStrategies: updated })
         comboStrategies = updated
       }
@@ -622,6 +629,7 @@
     isSaving={isSavingCombo}
     saveError={comboSaveError}
     responseTimeoutMs={editingCombo ? comboStrategies[editingCombo.name]?.firstTokenTimeoutMs ?? 0 : 0}
+    responseGraceMs={editingCombo ? comboStrategies[editingCombo.name]?.firstTokenGraceMs : undefined}
     onClose={closeModal}
     onSave={handleSaveCombo}
     onOpenModelPicker={() => openModelPicker('combo')}

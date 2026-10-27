@@ -146,3 +146,73 @@ func TestComboTimeoutFinalCandidate(t *testing.T) {
 		}
 	}
 }
+
+func TestComboTimeoutGracePeriod(t *testing.T) {
+	cases := []struct {
+		name          string
+		settings      map[string]any
+		wantStalledOn int32 // stalled upstream hits after two requests
+	}{
+		{"default grace benches the model", map[string]any{"firstTokenTimeoutMs": 100}, 1},
+		{"explicit grace benches the model", map[string]any{"firstTokenTimeoutMs": 100, "firstTokenGraceMs": 60000}, 1},
+		{"zero grace re-includes at once", map[string]any{"firstTokenTimeoutMs": 100, "firstTokenGraceMs": 0}, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var stalledCalls atomic.Int32
+			release := make(chan struct{})
+			stalled := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				stalledCalls.Add(1)
+				select {
+				case <-r.Context().Done():
+				case <-release:
+				}
+			}))
+			defer stalled.Close()
+			defer close(release)
+			healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"healthy response"}}]}`))
+			}))
+			defer healthy.Close()
+			repo := seedComboWithTwoUpstreams(t, "grace-"+strings.ReplaceAll(tc.name, " ", "-"), stalled.URL, healthy.URL, "grace-test")
+			if err := repo.UpdateSettingsRaw(map[string]any{"comboStrategies": map[string]any{"grace-test": tc.settings}}); err != nil {
+				t.Fatal(err)
+			}
+			h := NewChatHandler(repo)
+			for i := 0; i < 2; i++ {
+				req := httptest.NewRequest(http.MethodPost, "/chat/completions",
+					strings.NewReader(`{"model":"grace-test","messages":[{"role":"user","content":"hi"}],"stream":false}`))
+				rec := httptest.NewRecorder()
+				h.HandleChatCompletions(rec, req)
+				if !strings.Contains(rec.Body.String(), "healthy response") {
+					t.Fatalf("request %d not served: %d %s", i, rec.Code, rec.Body.String())
+				}
+			}
+			if got := stalledCalls.Load(); got != tc.wantStalledOn {
+				t.Fatalf("stalled model hit %d times, want %d", got, tc.wantStalledOn)
+			}
+		})
+	}
+}
+
+func TestBenchedModelsReturnAfterGrace(t *testing.T) {
+	h := &ChatHandler{}
+	models := []string{"a/x", "b/y"}
+	h.benchTimedOutModel("c", "a/x", time.Hour)
+	if got := h.withoutBenchedModels("c", models, time.Hour); len(got) != 1 || got[0] != "b/y" {
+		t.Fatalf("benched model not skipped: %v", got)
+	}
+	if got := h.withoutBenchedModels("other", models, time.Hour); len(got) != 2 {
+		t.Fatalf("bench leaked to another combo: %v", got)
+	}
+	h.benchTimedOutModel("c", "b/y", time.Hour)
+	if got := h.withoutBenchedModels("c", models, time.Hour); len(got) != 2 {
+		t.Fatalf("fully benched chain must stay intact: %v", got)
+	}
+	h.timeoutBench[comboBenchKey("c", "a/x")] = time.Now().Add(-time.Second)
+	h.timeoutBench[comboBenchKey("c", "b/y")] = time.Now().Add(-time.Second)
+	if got := h.withoutBenchedModels("c", models, time.Hour); len(got) != 2 {
+		t.Fatalf("expired grace must re-include: %v", got)
+	}
+}

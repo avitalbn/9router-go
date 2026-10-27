@@ -35,6 +35,12 @@ func applyComboStrategies(s *SettingsData, raw map[string]any) {
 		if timeout, ok := vm["firstTokenTimeoutMs"].(float64); ok && timeout > 0 && timeout <= float64((1<<63-1)/1000000) && timeout == float64(int64(timeout)) {
 			entry.FirstTokenTimeoutMs = int(timeout)
 		}
+		// Unlike the timeout, zero is meaningful here ("re-include at once"),
+		// so only an absent or invalid value falls back to the default.
+		if grace, ok := vm["firstTokenGraceMs"].(float64); ok && grace >= 0 && grace <= float64((1<<63-1)/1000000) && grace == float64(int64(grace)) {
+			g := int(grace)
+			entry.FirstTokenGraceMs = &g
+		}
 		entry.SmartPolicy = handlerutil.GetString(vm, "smartPolicy")
 		if ss, ok := vm["sessionSticky"].(bool); ok {
 			entry.SessionSticky = &ss

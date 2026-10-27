@@ -43,3 +43,31 @@ func TestComboResponseTimeoutSettings(t *testing.T) {
 		t.Fatal("other combo changed")
 	}
 }
+
+func TestComboTimeoutGraceSettings(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	repo := NewRepo(database)
+	if err := repo.UpdateSettingsRaw(map[string]any{"comboStrategies": map[string]any{
+		"custom":     map[string]any{"firstTokenTimeoutMs": 1000, "firstTokenGraceMs": 90000},
+		"zero":       map[string]any{"firstTokenTimeoutMs": 1000, "firstTokenGraceMs": 0},
+		"absent":     map[string]any{"firstTokenTimeoutMs": 1000},
+		"negative":   map[string]any{"firstTokenTimeoutMs": 1000, "firstTokenGraceMs": -5},
+		"fractional": map[string]any{"firstTokenTimeoutMs": 1000, "firstTokenGraceMs": 1.5},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := repo.GetSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]int{"custom": 90000, "zero": 0, "absent": DefaultFirstTokenGraceMs, "negative": DefaultFirstTokenGraceMs, "fractional": DefaultFirstTokenGraceMs}
+	for name, ms := range want {
+		if got := settings.ComboStrategies[name].FirstTokenGrace(); got != ms {
+			t.Errorf("%s grace = %d, want %d", name, got, ms)
+		}
+	}
+	if DefaultFirstTokenGraceMs != 300000 {
+		t.Fatal("default grace must be five minutes")
+	}
+}

@@ -185,7 +185,12 @@ If it expires before output is committed, the router cancels that candidate
 and tries the next; if the last candidate times out, it returns a timeout
 error. An active stream is not cut off by this setting. For non-streaming
 requests, the timer covers the wait for the complete response. Fusion panel
-timing is separate. The dashboard shows seconds; the setting is stored in
+timing is separate. A model that times out is left out of that combo for a
+grace period (default 5 minutes, set per combo under the timeout in the Edit
+dialog; `0` re-includes it on the next request) and then rejoins the chain. If
+every model in the chain is inside its grace period, the full chain is used. The
+pause is held in memory and resets on restart. Stored as
+`firstTokenGraceMs` next to the timeout. The dashboard shows seconds; the setting is stored in
 milliseconds as `comboStrategies[comboName].firstTokenTimeoutMs`.
 
 ---

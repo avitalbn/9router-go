@@ -18,6 +18,9 @@
   import {
     COMBO_SORT_OPTIONS,
     DEFAULT_SMART_RULE_MAX_MEMBERS,
+    DEFAULT_FIRST_TOKEN_GRACE_SECONDS,
+    graceMsToSeconds,
+    graceSecondsToMs,
     MAX_FIRST_TOKEN_TIMEOUT_SECONDS,
     RESPONSE_TIMEOUT_HELP,
     secondsToTimeoutMs,
@@ -40,12 +43,15 @@
     onClose: () => void
     /** Stored timeout (ms) of the combo being edited; 0/undefined = disabled. */
     responseTimeoutMs?: number
-    /** `timeoutMs` is null only when the field is invalid, which blocks save. */
+    /** Stored grace (ms) after a timeout; undefined = default. */
+    responseGraceMs?: number
+    /** `graceMs` undefined means "use the default" and clears the stored value. */
     onSave: (
       name: string,
       models: string[],
       matchRules: SmartRule[],
-      timeoutMs: number
+      timeoutMs: number,
+      graceMs: number | undefined
     ) => Promise<void> | void
     onOpenModelPicker: () => void
     onUpdateModels: (models: string[]) => void
@@ -58,6 +64,7 @@
     isSaving = false,
     saveError = '',
     responseTimeoutMs = 0,
+    responseGraceMs = undefined,
     onClose,
     onSave,
     onOpenModelPicker,
@@ -69,6 +76,13 @@
   // Seeded once per open: the modal is remounted by the {#key} in CombosView.
   let timeoutInput = $state<string | number | null>(String(timeoutMsToSeconds(responseTimeoutMs) || ''))
   let timeoutMs = $derived(secondsToTimeoutMs(timeoutInput))
+  let graceInput = $state<string | number | null>(graceMsToSeconds(responseGraceMs))
+  let graceMs = $derived(graceSecondsToMs(graceInput))
+  let graceError = $derived(
+    graceMs === null
+      ? `Enter 0–${MAX_FIRST_TOKEN_TIMEOUT_SECONDS} seconds, or leave empty for the default`
+      : ''
+  )
   let timeoutError = $derived(
     timeoutMs === null
       ? `Enter 0–${MAX_FIRST_TOKEN_TIMEOUT_SECONDS} seconds, or leave empty to disable`
@@ -293,8 +307,8 @@
 
   function handleSave() {
     if (!validateModalName(modalName)) return
-    if (timeoutMs === null) return
-    onSave(modalName.trim(), models, rules, timeoutMs)
+    if (timeoutMs === null || graceMs === null) return
+    onSave(modalName.trim(), models, rules, timeoutMs, graceMs)
   }
 
   function moveModel(idx: number, delta: number) {
@@ -371,6 +385,32 @@
       <p class="mt-1.5 text-xs text-text-muted">{RESPONSE_TIMEOUT_HELP}</p>
       {#if timeoutError}
         <p class="mt-1 text-xs text-red-500" role="alert">{timeoutError}</p>
+      {/if}
+      <div class="mt-3 flex items-center gap-2 border-t border-border pt-3 {timeoutMs ? '' : 'opacity-50'}">
+        <span class="material-symbols-outlined text-[18px] text-text-muted">hourglass_top</span>
+        <label for="combo-response-grace" class="text-sm font-medium">Grace period after a timeout</label>
+        <div class="ml-auto flex items-center gap-1.5">
+          <input
+            id="combo-response-grace"
+            type="number"
+            min="0"
+            max={MAX_FIRST_TOKEN_TIMEOUT_SECONDS}
+            step="any"
+            placeholder={String(DEFAULT_FIRST_TOKEN_GRACE_SECONDS)}
+            disabled={!timeoutMs}
+            bind:value={graceInput}
+            class="w-24 rounded-lg border bg-surface px-2.5 py-1.5 text-sm text-text-main focus:outline-none focus:border-brand-500 disabled:cursor-not-allowed {graceError ? 'border-red-500' : 'border-border'}"
+          />
+          <span class="text-sm text-text-muted">seconds</span>
+        </div>
+      </div>
+      <p class="mt-1.5 text-xs text-text-muted">
+        A model that times out is left out of this combo for this long, then rejoins the chain.
+        Leave empty for the default ({DEFAULT_FIRST_TOKEN_GRACE_SECONDS / 60} minutes); 0 retries it on the next request.
+        The pause is kept in memory and resets when the gateway restarts.
+      </p>
+      {#if graceError}
+        <p class="mt-1 text-xs text-red-500" role="alert">{graceError}</p>
       {/if}
     </div>
     <!-- Smart rules: the source of membership, so it sits above the list it
@@ -680,7 +720,7 @@
         onclick={handleSave}
         fullWidth
         size="sm"
-        disabled={!modalName.trim() || !!modalNameError || timeoutMs === null || isSaving}
+        disabled={!modalName.trim() || !!modalNameError || timeoutMs === null || graceMs === null || isSaving}
         loading={isSaving}
       >
         {isSaving ? 'Saving...' : editingCombo ? 'Save' : 'Create'}

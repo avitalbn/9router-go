@@ -14,6 +14,10 @@ type ComboStrategy struct {
 	JudgeModel  string `json:"judgeModel,omitempty"`
 	// FirstTokenTimeoutMs bounds a combo candidate until its first usable response; zero disables it.
 	FirstTokenTimeoutMs int `json:"firstTokenTimeoutMs,omitempty"`
+	// FirstTokenGraceMs is how long a model that timed out is left out of the
+	// combo chain before it is tried again. Nil means DefaultFirstTokenGraceMs;
+	// an explicit zero re-includes the model on the very next request.
+	FirstTokenGraceMs *int `json:"firstTokenGraceMs,omitempty"`
 	// SmartPolicy is "smart" (adaptive switch, default), "strict" (lock the
 	// first evaluated model for the session), "per-turn" (no stickiness), or
 	// "custom" (SmartCustomThreshold governs switching).
@@ -35,6 +39,18 @@ type ComboStrategy struct {
 	// One evaluation plus session stickiness) and keeps the combo's own order
 	// on every failure path, so this flag is a no-op there.
 	RespectStoredOrder bool `json:"respectStoredOrder,omitempty"`
+}
+
+// DefaultFirstTokenGraceMs is the grace period applied after a model response
+// timeout when the combo does not set its own: five minutes.
+const DefaultFirstTokenGraceMs = 5 * 60 * 1000
+
+// FirstTokenGrace resolves the effective grace period in milliseconds.
+func (c ComboStrategy) FirstTokenGrace() int {
+	if c.FirstTokenGraceMs == nil {
+		return DefaultFirstTokenGraceMs
+	}
+	return *c.FirstTokenGraceMs
 }
 
 // ProviderStrategy defines routing and proxy pool options for a specific
