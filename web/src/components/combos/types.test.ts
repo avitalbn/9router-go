@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'bun:test'
-import { COMBO_STRATEGIES, resolveComboStrategy } from './types'
+import {
+  clearJudgeModel,
+  COMBO_STRATEGIES,
+  effectiveComboStrategy,
+  MAX_FIRST_TOKEN_TIMEOUT_MS,
+  resolveComboStrategy,
+  updateComboStrategy,
+  updateFirstTokenTimeout,
+  type ComboStrategyInfo
+} from './types'
 
 const OPTION_VALUES = COMBO_STRATEGIES.map((s) => s.value)
 
@@ -50,6 +59,52 @@ describe('resolveComboStrategy', () => {
     for (const strategy of COMBO_STRATEGIES) {
       expect(strategy.value.length).toBeGreaterThan(0)
       expect(strategy.label.length).toBeGreaterThan(0)
+    }
+  })
+})
+
+describe('per-combo response timeout', () => {
+  it('sets and disables only the timeout without mutating existing settings', () => {
+    const current: Record<string, ComboStrategyInfo> = {
+      primary: { fallbackStrategy: 'smart', judgeModel: 'judge', routerModel: 'router', sessionSticky: false },
+      other: { firstTokenTimeoutMs: 750 }
+    }
+    const enabled = updateFirstTokenTimeout(current, 'primary', 2500)
+    expect(enabled.primary).toEqual({ ...current.primary, firstTokenTimeoutMs: 2500 })
+    expect(enabled.other).toBe(current.other)
+    expect(current.primary.firstTokenTimeoutMs).toBeUndefined()
+
+    const disabled = updateFirstTokenTimeout(enabled, 'primary', 0)
+    expect(disabled.primary).toEqual({ ...current.primary, firstTokenTimeoutMs: 0 })
+    expect(enabled.primary.firstTokenTimeoutMs).toBe(2500)
+  })
+
+  it('keeps inherited strategy when adding or disabling a timeout', () => {
+    const enabled = updateFirstTokenTimeout({}, 'inherited', 1000)
+    const disabled = updateFirstTokenTimeout(enabled, 'inherited', 0)
+    for (const settings of [enabled, disabled]) {
+      expect(settings.inherited.fallbackStrategy).toBeUndefined()
+      expect(effectiveComboStrategy(settings.inherited.fallbackStrategy, 'round-robin')).toBe('round-robin')
+    }
+  })
+
+  it('preserves timeout when switching to inherited strategy or clearing a judge', () => {
+    const current = { primary: { fallbackStrategy: 'fusion', judgeModel: 'judge', firstTokenTimeoutMs: 1200 } }
+    const inherited = updateComboStrategy(current, 'primary', 'inherit')
+    expect(inherited.primary).toEqual({ judgeModel: 'judge', firstTokenTimeoutMs: 1200 })
+    expect(clearJudgeModel(inherited, 'primary').primary).toEqual({ firstTokenTimeoutMs: 1200 })
+  })
+
+  it('accepts the backend maximum timeout', () => {
+    expect(updateFirstTokenTimeout({}, 'primary', MAX_FIRST_TOKEN_TIMEOUT_MS)).toEqual({
+      primary: { firstTokenTimeoutMs: MAX_FIRST_TOKEN_TIMEOUT_MS }
+    })
+  })
+
+  it('rejects values outside the backend integer millisecond range', () => {
+    const current = { primary: { firstTokenTimeoutMs: 1000 } }
+    for (const invalid of [-1, 0.5, NaN, Infinity, MAX_FIRST_TOKEN_TIMEOUT_MS + 1, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(updateFirstTokenTimeout(current, 'primary', invalid)).toBe(current)
     }
   })
 })

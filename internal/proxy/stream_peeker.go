@@ -17,7 +17,22 @@ func HasSSEContent(chunk []byte) bool {
 	if len(chunk) == 0 {
 		return false
 	}
+	// One write can contain multiple SSE events. Evaluate each line separately:
+	// an empty content_block_start must not mask a later non-empty text delta.
 	s := string(chunk)
+	for {
+		line, rest, more := strings.Cut(s, "\n")
+		if hasSSEContentLine(line) {
+			return true
+		}
+		if !more {
+			return false
+		}
+		s = rest
+	}
+}
+
+func hasSSEContentLine(s string) bool {
 	// OpenAI chat completions
 	if strings.Contains(s, `"content":"`) {
 		// Ensure it's not empty content: ""

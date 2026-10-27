@@ -1,0 +1,148 @@
+package chat
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	internalproxy "9router/proxy/internal/proxy"
+)
+
+func TestComboResponseTimeoutPrecommit(t *testing.T) {
+	rec := httptest.NewRecorder()
+	gate := newComboResponseTimeout(context.Background(), rec, time.Hour)
+	defer gate.finish()
+	peeker := internalproxy.NewStreamContentPeeker(gate)
+	_, _ = peeker.Write([]byte("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n"))
+	gate.expire()
+	if gate.ctx.Err() != context.Canceled || !gate.timedOut() {
+		t.Fatal("precommit timeout must cancel candidate")
+	}
+	_, _ = peeker.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"late\"}}]}\n\n"))
+	if rec.Body.Len() != 0 {
+		t.Fatalf("expired candidate leaked response: %s", rec.Body.String())
+	}
+}
+
+func TestComboResponseTimeoutKeepsCommittedStreamAlive(t *testing.T) {
+	rec := httptest.NewRecorder()
+	gate := newComboResponseTimeout(context.Background(), rec, time.Hour)
+	defer gate.finish()
+	peeker := internalproxy.NewStreamContentPeeker(gate)
+	_, _ = peeker.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n"))
+	gate.expire()
+	if gate.ctx.Err() != nil || gate.timedOut() {
+		t.Fatal("committed stream must outlive response timeout")
+	}
+	_, _ = peeker.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"second\"}}]}\n\n"))
+	if !strings.Contains(rec.Body.String(), "second") {
+		t.Fatal("active stream lost later output")
+	}
+}
+
+func TestComboResponseTimeoutParentCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	gate := newComboResponseTimeout(ctx, httptest.NewRecorder(), time.Hour)
+	defer gate.finish()
+	cancel()
+	if gate.ctx.Err() != context.Canceled || gate.timedOut() {
+		t.Fatal("parent cancellation must remain distinct from model timeout")
+	}
+}
+
+func TestComboModelResponseTimeoutEndpoints(t *testing.T) {
+	for _, messages := range []bool{false, true} {
+		for _, stream := range []bool{false, true} {
+			name := "chat"
+			if messages {
+				name = "messages"
+			}
+			if stream {
+				name += "-stream"
+			}
+			t.Run(name, func(t *testing.T) {
+				var stalledCalls atomic.Int32
+				release := make(chan struct{})
+				stalled := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					stalledCalls.Add(1)
+					// Stream headers and a role-only frame are not usable content.
+					// Non-streaming requests exercise a stall before headers.
+					if stream {
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n"))
+						w.(http.Flusher).Flush()
+					}
+					select {
+					case <-r.Context().Done():
+					case <-release:
+					}
+				}))
+				defer stalled.Close()
+				defer close(release)
+				healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if stream {
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"healthy response\"}}]}\n\ndata: [DONE]\n\n"))
+					} else {
+						w.Header().Set("Content-Type", "application/json")
+						_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"healthy response"}}]}`))
+					}
+				}))
+				defer healthy.Close()
+				repo := seedComboWithTwoUpstreams(t, "combo-timeout-"+name, stalled.URL, healthy.URL, "timeout-test")
+				if err := repo.UpdateSettingsRaw(map[string]any{"comboStrategies": map[string]any{"timeout-test": map[string]any{"firstTokenTimeoutMs": 100}}}); err != nil {
+					t.Fatal(err)
+				}
+				h := NewChatHandler(repo)
+				body := `{"model":"timeout-test","messages":[{"role":"user","content":"hi"}],"stream":false}`
+				if stream {
+					body = strings.Replace(body, `"stream":false`, `"stream":true`, 1)
+				}
+				req := httptest.NewRequest(http.MethodPost, "/chat/completions", strings.NewReader(body))
+				rec := httptest.NewRecorder()
+				if messages {
+					h.HandleMessages(rec, req)
+				} else {
+					h.HandleChatCompletions(rec, req)
+				}
+				if !strings.Contains(rec.Body.String(), "healthy response") {
+					t.Fatalf("missing failover: %d %s", rec.Code, rec.Body.String())
+				}
+				if stalledCalls.Load() != 1 {
+					t.Fatalf("timed-out model retried %d times", stalledCalls.Load())
+				}
+				if !repo.IsProviderAvailable("deepseek", "deepseek-chat") {
+					t.Fatal("model timeout cooled provider")
+				}
+				if locked, _ := repo.IsConnectionModelLocked("mock-a", "deepseek-chat"); locked {
+					t.Fatal("model timeout locked account")
+				}
+			})
+		}
+	}
+}
+
+func TestComboTimeoutFinalCandidate(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		rec := httptest.NewRecorder()
+		cw := newCommittedResponseWriter(rec)
+		cw.stream = stream
+		gate := newComboResponseTimeout(context.Background(), cw, time.Hour)
+		gate.expire()
+		if !gate.finish() {
+			t.Fatal("final candidate timeout lost")
+		}
+		var retry passRetry
+		retry.writeError(cw, comboTimeoutError())
+		if rec.Code != http.StatusGatewayTimeout || !strings.Contains(rec.Body.String(), "model response timeout") {
+			t.Fatalf("missing timeout error: %d %s", rec.Code, rec.Body.String())
+		}
+		if stream && !strings.Contains(rec.Body.String(), "data: [DONE]") {
+			t.Fatal("missing SSE terminator")
+		}
+	}
+}

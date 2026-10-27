@@ -9,6 +9,7 @@
     parseCapacityAdapterSettings,
     resolveComboStrategy,
     updateComboStrategy,
+    updateFirstTokenTimeout,
     updateJudgeModel,
     updateRouterModel,
     updateSmartPolicy,
@@ -179,6 +180,19 @@
       onRefresh()
     } catch (e) {
       console.error('Failed to update combo strategy:', e)
+    }
+  }
+
+  async function handleSetResponseTimeout(combo: Combo, timeoutMs: number) {
+    const previous = comboStrategies
+    const updated = updateFirstTokenTimeout(comboStrategies, combo.name, timeoutMs)
+    if (updated === previous) return
+    comboStrategies = updated
+    try {
+      await api.patchSettings({ comboStrategies: updated })
+    } catch (e) {
+      if (comboStrategies === updated) comboStrategies = previous
+      console.error('Failed to update model response timeout:', e)
     }
   }
 
@@ -546,6 +560,7 @@
             globalStrategy={globalComboStrategy}
             {copiedId}
             onSetStrategy={handleSetStrategy}
+            onSetResponseTimeout={handleSetResponseTimeout}
             onOpenJudgePicker={(c) => { editingCombo = c; openModelPicker('judge') }}
             onClearJudge={clearJudge}
             onOpenRouterPicker={(c) => { editingCombo = c; openModelPicker('router') }}

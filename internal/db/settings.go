@@ -12,6 +12,8 @@ type ComboStrategy struct {
 	Strategy    string `json:"strategy,omitempty"`
 	StickyLimit int    `json:"stickyLimit,omitempty"`
 	JudgeModel  string `json:"judgeModel,omitempty"`
+	// FirstTokenTimeoutMs bounds a combo candidate until its first usable response; zero disables it.
+	FirstTokenTimeoutMs int `json:"firstTokenTimeoutMs,omitempty"`
 	// SmartPolicy is "smart" (adaptive switch, default), "strict" (lock the
 	// first evaluated model for the session), "per-turn" (no stickiness), or
 	// "custom" (SmartCustomThreshold governs switching).
@@ -352,6 +354,9 @@ func (r *Repo) GetSettings() (*SettingsData, error) {
 					StickyLimit: sticky,
 					JudgeModel:  judge,
 				}
+				if timeout, ok := vm["firstTokenTimeoutMs"].(float64); ok && timeout > 0 && timeout <= float64((1<<63-1)/1000000) && timeout == float64(int64(timeout)) {
+					entry.FirstTokenTimeoutMs = int(timeout)
+				}
 				entry.SmartPolicy = handlerutil.GetString(vm, "smartPolicy")
 				if ss, ok := vm["sessionSticky"].(bool); ok {
 					entry.SessionSticky = &ss
@@ -529,8 +534,11 @@ func (r *Repo) SetComboStrategy(comboName string, strat ComboStrategy) error {
 	if strat.JudgeModel != "" {
 		entry["judgeModel"] = strat.JudgeModel
 	}
+	if strat.FirstTokenTimeoutMs > 0 {
+		entry["firstTokenTimeoutMs"] = strat.FirstTokenTimeoutMs
+	}
 
-	if strat.Strategy == "fallback" && strat.JudgeModel == "" {
+	if strat.Strategy == "fallback" && strat.JudgeModel == "" && len(entry) <= 2 {
 		delete(currentMap, comboName)
 	} else {
 		currentMap[comboName] = entry

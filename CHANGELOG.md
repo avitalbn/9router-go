@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Per-combo **Model response timeout** (`firstTokenTimeoutMs`), disabled by
+  default, advances sequential routing when a candidate has not produced a
+  usable response in time. Once streaming output is committed, the timeout
+  no longer interrupts it. Fusion panel timing is unchanged.
+
 ## [v1.9.14] - 2026-10-20
 
 ### Fix Settings redirect to Endpoint & Key in mobile and unauthenticated sessions

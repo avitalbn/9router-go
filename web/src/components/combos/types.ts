@@ -11,6 +11,8 @@ export interface ComboStrategyInfo {
   confidenceThreshold?: number
   /** System One model that evaluates the route; empty means the free default. */
   routerModel?: string
+  /** Milliseconds from candidate start to first usable response; 0/absent disables. */
+  firstTokenTimeoutMs?: number
 }
 
 /**
@@ -166,6 +168,22 @@ export function updateComboStrategy(
   return updated
 }
 
+/** Largest whole-millisecond timeout representable by the backend duration. */
+export const MAX_FIRST_TOKEN_TIMEOUT_MS = 9223372036854
+
+/** Update only the response timeout, leaving strategy inheritance untouched. */
+export function updateFirstTokenTimeout(
+  currentStrategies: Record<string, ComboStrategyInfo>,
+  comboName: string,
+  firstTokenTimeoutMs: number
+): Record<string, ComboStrategyInfo> {
+  if (!Number.isSafeInteger(firstTokenTimeoutMs) || firstTokenTimeoutMs < 0 || firstTokenTimeoutMs > MAX_FIRST_TOKEN_TIMEOUT_MS) return currentStrategies
+  return {
+    ...currentStrategies,
+    [comboName]: { ...(currentStrategies[comboName] || {}), firstTokenTimeoutMs }
+  }
+}
+
 export function updateJudgeModel(
   currentStrategies: Record<string, ComboStrategyInfo>,
   comboName: string,
@@ -184,9 +202,8 @@ export function clearJudgeModel(
   const updated = { ...currentStrategies }
   if (updated[comboName]) {
     const { judgeModel: _, ...rest } = updated[comboName]
-    // Only an inheriting combo loses its entry here: a combo that names
-    // `fallback` explicitly keeps it (upstream #4576).
-    if (rest.fallbackStrategy && rest.fallbackStrategy !== INHERIT_STRATEGY) {
+    // Clearing the judge must preserve timeout and other inherited settings.
+    if (Object.keys(rest).length > 0) {
       updated[comboName] = rest
     } else {
       delete updated[comboName]
