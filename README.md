@@ -177,15 +177,16 @@ docker run -d --name 9router-go --restart unless-stopped \
 - 📡 Live usage + console-log SSE streams, stall detection
 - 💾 SQLite WAL persistence, outbound proxy support, self-update, MITM commands, Docker, cross-compilation
 
-For sequential combo routing, set **Model response timeout** on the combo card
-in milliseconds. A value of `0` disables it. The timer covers each model
+For sequential combo routing, set **Model response timeout** in seconds (decimals
+such as `5.3` are fine) in the combo's Edit dialog, or from the compact field on the
+combo card. Empty or `0` disables it. The timer covers each model
 candidate, including connection selection and waiting for a usable response.
 If it expires before output is committed, the router cancels that candidate
 and tries the next; if the last candidate times out, it returns a timeout
 error. An active stream is not cut off by this setting. For non-streaming
 requests, the timer covers the wait for the complete response. Fusion panel
-timing is separate. The setting is stored as
-`comboStrategies[comboName].firstTokenTimeoutMs`.
+timing is separate. The dashboard shows seconds; the setting is stored in
+milliseconds as `comboStrategies[comboName].firstTokenTimeoutMs`.
 
 ---
 

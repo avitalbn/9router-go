@@ -6,6 +6,9 @@ import {
   effectiveComboStrategy,
   isComboSorted,
   MAX_FIRST_TOKEN_TIMEOUT_MS,
+  MAX_FIRST_TOKEN_TIMEOUT_SECONDS,
+  secondsToTimeoutMs,
+  timeoutMsToSeconds,
   resolveComboStrategy,
   sortComboMembers,
   sortMembersByProvider,
@@ -352,5 +355,25 @@ describe('COMBO_SORT_OPTIONS', () => {
       expect(opt.label.length).toBeGreaterThan(0)
       expect(opt.hint.length).toBeGreaterThan(0)
     }
+  })
+})
+
+describe('response timeout seconds conversion', () => {
+  it('converts dashboard seconds to stored milliseconds', () => {
+    expect(secondsToTimeoutMs('30')).toBe(30000)
+    expect(secondsToTimeoutMs(1.5)).toBe(1500)
+    expect(secondsToTimeoutMs('0.001')).toBe(1)
+    expect(secondsToTimeoutMs('')).toBe(0)
+    expect(secondsToTimeoutMs(null)).toBe(0)
+  })
+  it('rejects negative, non-numeric and oversized values', () => {
+    for (const bad of [-1, 'abc', NaN, Infinity, MAX_FIRST_TOKEN_TIMEOUT_SECONDS + 1]) {
+      expect(secondsToTimeoutMs(bad)).toBeNull()
+    }
+    expect(secondsToTimeoutMs(MAX_FIRST_TOKEN_TIMEOUT_SECONDS)).toBe(MAX_FIRST_TOKEN_TIMEOUT_SECONDS * 1000)
+  })
+  it('shows stored milliseconds as seconds', () => {
+    expect(timeoutMsToSeconds(2500)).toBe(2.5)
+    expect(timeoutMsToSeconds(undefined)).toBe(0)
   })
 })

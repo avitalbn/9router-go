@@ -18,6 +18,10 @@
   import {
     COMBO_SORT_OPTIONS,
     DEFAULT_SMART_RULE_MAX_MEMBERS,
+    MAX_FIRST_TOKEN_TIMEOUT_SECONDS,
+    RESPONSE_TIMEOUT_HELP,
+    secondsToTimeoutMs,
+    timeoutMsToSeconds,
     parseSmartRules,
     SMART_RULE_MODES,
     smartRuleSummary,
@@ -34,7 +38,15 @@
      * custom model id). Shown inline so a 409 is never a silent no-op. */
     saveError?: string
     onClose: () => void
-    onSave: (name: string, models: string[], matchRules: SmartRule[]) => Promise<void> | void
+    /** Stored timeout (ms) of the combo being edited; 0/undefined = disabled. */
+    responseTimeoutMs?: number
+    /** `timeoutMs` is null only when the field is invalid, which blocks save. */
+    onSave: (
+      name: string,
+      models: string[],
+      matchRules: SmartRule[],
+      timeoutMs: number
+    ) => Promise<void> | void
     onOpenModelPicker: () => void
     onUpdateModels: (models: string[]) => void
   }
@@ -45,6 +57,7 @@
     models,
     isSaving = false,
     saveError = '',
+    responseTimeoutMs = 0,
     onClose,
     onSave,
     onOpenModelPicker,
@@ -53,6 +66,14 @@
 
   let modalName = $state(editingCombo?.name || '')
   let modalNameError = $state('')
+  // Seeded once per open: the modal is remounted by the {#key} in CombosView.
+  let timeoutInput = $state<string | number | null>(String(timeoutMsToSeconds(responseTimeoutMs) || ''))
+  let timeoutMs = $derived(secondsToTimeoutMs(timeoutInput))
+  let timeoutError = $derived(
+    timeoutMs === null
+      ? `Enter 0–${MAX_FIRST_TOKEN_TIMEOUT_SECONDS} seconds, or leave empty to disable`
+      : ''
+  )
   let editingIdx = $state<number | null>(null)
   let editDraft = $state('')
   let draggedIdx = $state<number | null>(null)
@@ -272,7 +293,8 @@
 
   function handleSave() {
     if (!validateModalName(modalName)) return
-    onSave(modalName.trim(), models, rules)
+    if (timeoutMs === null) return
+    onSave(modalName.trim(), models, rules, timeoutMs)
   }
 
   function moveModel(idx: number, delta: number) {
@@ -326,6 +348,31 @@
       </p>
     </div>
 
+    <!-- Model response timeout: a failover control, so it sits right under the
+         name rather than in the card's right column. -->
+    <div class="rounded-lg border border-border bg-surface-2 p-3">
+      <div class="flex items-center gap-2">
+        <span class="material-symbols-outlined text-[18px] text-brand-500">timer</span>
+        <label for="combo-response-timeout" class="text-sm font-medium">Model response timeout</label>
+        <div class="ml-auto flex items-center gap-1.5">
+          <input
+            id="combo-response-timeout"
+            type="number"
+            min="0"
+            max={MAX_FIRST_TOKEN_TIMEOUT_SECONDS}
+            step="any"
+            placeholder="Off"
+            bind:value={timeoutInput}
+            class="w-24 rounded-lg border bg-surface px-2.5 py-1.5 text-sm text-text-main focus:outline-none focus:border-brand-500 {timeoutError ? 'border-red-500' : 'border-border'}"
+          />
+          <span class="text-sm text-text-muted">seconds</span>
+        </div>
+      </div>
+      <p class="mt-1.5 text-xs text-text-muted">{RESPONSE_TIMEOUT_HELP}</p>
+      {#if timeoutError}
+        <p class="mt-1 text-xs text-red-500" role="alert">{timeoutError}</p>
+      {/if}
+    </div>
     <!-- Smart rules: the source of membership, so it sits above the list it
          feeds. With twenty members the list fills the modal, and a rules
          editor below it was only reachable by scrolling past the result to
@@ -633,7 +680,7 @@
         onclick={handleSave}
         fullWidth
         size="sm"
-        disabled={!modalName.trim() || !!modalNameError || isSaving}
+        disabled={!modalName.trim() || !!modalNameError || timeoutMs === null || isSaving}
         loading={isSaving}
       >
         {isSaving ? 'Saving...' : editingCombo ? 'Save' : 'Create'}

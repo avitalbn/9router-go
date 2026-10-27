@@ -281,7 +281,12 @@
     comboSaveError = ''
   }
 
-  async function handleSaveCombo(name: string, models: string[], matchRules: SmartRule[]) {
+  async function handleSaveCombo(
+    name: string,
+    models: string[],
+    matchRules: SmartRule[],
+    timeoutMs: number
+  ) {
     isSavingCombo = true
     comboSaveError = ''
     try {
@@ -289,6 +294,14 @@
         await api.updateCombo(editingCombo.id, { name, models, matchRules })
       } else {
         await api.createCombo({ name, models, strategy: 'fallback', matchRules })
+      }
+      // Strategies are keyed by combo name, so the timeout is written under the
+      // saved name, and only when it differs from what is stored: a plain save
+      // must not create an empty strategy row.
+      if ((comboStrategies[name]?.firstTokenTimeoutMs ?? 0) !== timeoutMs) {
+        const updated = updateFirstTokenTimeout(comboStrategies, name, timeoutMs)
+        await api.patchSettings({ comboStrategies: updated })
+        comboStrategies = updated
       }
       closeModal()
       onRefresh()
@@ -608,6 +621,7 @@
     models={modalModels}
     isSaving={isSavingCombo}
     saveError={comboSaveError}
+    responseTimeoutMs={editingCombo ? comboStrategies[editingCombo.name]?.firstTokenTimeoutMs ?? 0 : 0}
     onClose={closeModal}
     onSave={handleSaveCombo}
     onOpenModelPicker={() => openModelPicker('combo')}

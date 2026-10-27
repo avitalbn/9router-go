@@ -179,6 +179,30 @@ export function updateComboStrategy(
 /** Largest whole-millisecond timeout representable by the backend duration. */
 export const MAX_FIRST_TOKEN_TIMEOUT_MS = 9223372036854
 
+/** Tooltip/help text shared by the combo card and the edit modal. */
+export const RESPONSE_TIMEOUT_HELP =
+  "Sequential failover: wait this many seconds for a model's first usable response (connection, headers and first content), then try the next model. Never cuts off a response that is already streaming. Leave empty or 0 to disable."
+
+/** The same ceiling in seconds, for the dashboard inputs. */
+export const MAX_FIRST_TOKEN_TIMEOUT_SECONDS = Math.floor(MAX_FIRST_TOKEN_TIMEOUT_MS / 1000)
+
+/**
+ * The dashboard edits the timeout in seconds; storage and the router keep
+ * milliseconds. Returns null for anything that is not a whole-millisecond
+ * value in range. A blank field means "disabled" (0).
+ */
+export function secondsToTimeoutMs(seconds: number | string | null | undefined): number | null {
+  if (seconds === '' || seconds == null) return 0
+  const n = typeof seconds === 'number' ? seconds : Number(seconds)
+  if (!Number.isFinite(n) || n < 0 || n > MAX_FIRST_TOKEN_TIMEOUT_SECONDS) return null
+  return Math.round(n * 1000)
+}
+
+/** Stored milliseconds as the seconds shown in the dashboard. */
+export function timeoutMsToSeconds(ms: number | undefined): number {
+  return ms && ms > 0 ? ms / 1000 : 0
+}
+
 /** Update only the response timeout, leaving strategy inheritance untouched. */
 export function updateFirstTokenTimeout(
   currentStrategies: Record<string, ComboStrategyInfo>,
