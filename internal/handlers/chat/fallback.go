@@ -1,6 +1,18 @@
 package chat
 
 import (
+	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/headroom"
+	"9router/proxy/internal/log"
+	"9router/proxy/internal/middleware"
+	"9router/proxy/internal/observ"
+	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy/executor"
+	"9router/proxy/internal/thinking"
+	"9router/proxy/internal/tokensaver"
+	"9router/proxy/internal/tracing"
+	"9router/proxy/internal/translator"
+	"9router/proxy/internal/usagetracker"
 	"bytes"
 	"context"
 	json "encoding/json/v2"
@@ -13,18 +25,7 @@ import (
 	"strings"
 	"time"
 
-	"9router/proxy/internal/handlerutil"
-	"9router/proxy/internal/headroom"
-	"9router/proxy/internal/log"
-	"9router/proxy/internal/middleware"
-	"9router/proxy/internal/observ"
-	"9router/proxy/internal/providers"
 	internalproxy "9router/proxy/internal/proxy"
-	"9router/proxy/internal/proxy/executor"
-	"9router/proxy/internal/tokensaver"
-	"9router/proxy/internal/tracing"
-	"9router/proxy/internal/translator"
-	"9router/proxy/internal/usagetracker"
 )
 
 // StatusClientClosedRequest is the canonical HTTP status for client connection aborts (nginx 499).
@@ -67,6 +68,9 @@ func (h *ChatHandler) handleAccountFallback(
 	translateResponse bool,
 	endpoint string,
 ) error {
+	if FallbackAttemptRecorderFrom(ctx) == nil {
+		ctx = WithFallbackAttemptRecorder(ctx, NewFallbackAttemptRecorder())
+	}
 	body = repairToolCallIDsInJSON(body)
 	if pinnedConnectionID != "" {
 		connObj, connData, err := h.getBestConnectionWithContext(ctx, provider, pinnedConnectionID, nil, model)
@@ -173,16 +177,19 @@ func (h *ChatHandler) handleAccountFallback(
 		// to a different account (force fallback), and the usage row, the logs
 		// and the exclusion below must all name the account that was dialled.
 		log.Debug("fallback", "connection", "conn", connObj.ID, "candidate", c.ID)
+		attemptStart := time.Now()
 		if err := h.tryForwardWithConnection(forwardRequestParams{
 			Ctx: ctx, W: w, Provider: provider, Model: model,
 			ConnectionID: connObj.ID, ConnName: connObjName(connObj), ConnEmail: connObjEmail(connObj),
 			ConnData: connData, Body: body,
 			IsStream: isStream, TranslateResponse: translateResponse, Endpoint: endpoint,
 		}); err == nil {
+			RecordAttemptFromContext(ctx, connObj.ID, connObjName(connObj), provider, model, 200, nil, time.Since(attemptStart).Milliseconds())
 			return nil
 		} else {
 			lastErr = err
 			observ.IncFallback(provider, model, observ.FallbackReasonUpstreamError)
+			RecordAttemptFromContext(ctx, connObj.ID, connObjName(connObj), provider, model, 0, err, time.Since(attemptStart).Milliseconds())
 		}
 		// A node-state refusal (contract ended, lifetime quota spent) answers 403, which
 		// is a retryable status, so without this it would fall into the generic branch
@@ -240,7 +247,7 @@ func (h *ChatHandler) handleAccountFallback(
 			// Classify error to get dynamic cooldown; provider-scoped rules
 			// key off the canonical provider the request routed to.
 			classification := providers.ClassifyErrorForProvider(ue.StatusCode, errorText, currentBackoffLevel, provider)
-			cooldownSec := retryableCooldownSec(ue.StatusCode, time.Duration(classification.CooldownMs)*time.Millisecond, ue)
+			cooldownSec := retryableCooldownSec(ue.StatusCode, time.Duration(classification.CooldownMs)*time.Millisecond, ue, provider)
 			errMsg := errorText
 			if errMsg == "" {
 				errMsg = fmt.Sprintf("%d upstream error", ue.StatusCode)
@@ -482,6 +489,10 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	connectionID, connData := f.ConnectionID, f.ConnData
 	body, isStream := f.Body, f.IsStream
 	translateResponse, endpoint := f.TranslateResponse, f.Endpoint
+	// Unified thinking normalisation, inbound half: capture the client's
+	// reasoning intent before any converter rewrites the body. model stays
+	// the requested id for logs/usage; wireModel is suffix-free.
+	body, wireModel, thinkingIntent := h.prepareInboundThinking(ctx, provider, model, body, f.Endpoint == "/v1/v1/messages" || f.Endpoint == "/v1/messages")
 	ctx = translator.WithUsageCapture(ctx)
 
 	providerCfg, err := h.getProviderConfig(provider, connData)
@@ -564,7 +575,17 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	// format, whichever of the two ways it earns that: a model routed to a
 	// Messages endpoint (opencode-zen's Claude and Qwen lanes), or an endpoint
 	// that speaks Messages outright (minimax-code on the mavis gateway).
+	// Anthropic's own two provider ids are the third way, and they follow the
+	// same rule chat.go applies when it decides whether to convert at all: it
+	// keeps the body in Claude format for provider "claude"/"anthropic"
+	// whatever base URL the connection carries. Mirrored here, because this
+	// flag is also what says "the body arriving is Claude-shaped" — without
+	// the name check a relay or proxy override made isAnthropic false, the
+	// outbound thinking pass ran with target "openai", and
+	// FilterToOpenAIFormatJSON rewrote a Claude body's tools into
+	// {type:"function",function:{…}} on its way to a Messages API.
 	claudeNative := messagesClient && (isAnthropic ||
+		provider == "claude" || provider == "anthropic" ||
 		executor.ServesMessagesEndpoint(provider, model) ||
 		servesClaudeMessages(provider, providerCfg))
 
@@ -602,7 +623,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 			var reqMap map[string]any
 			if err := json.Unmarshal(pipedBody, &reqMap); err == nil {
 				claudeToolMap = cloakClaudeTools(reqMap)
-				if out, err := json.Marshal(reqMap); err == nil {
+				if out, err := json.Marshal(reqMap, json.Deterministic(true)); err == nil {
 					pipedBody = out
 				}
 			}
@@ -613,7 +634,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	// redact-thinking beta: it asks Anthropic for signature-only thinking blocks
 	// and would blank exactly what the client requested. The header map is
 	// shared with the registry, so this edits a request-local copy.
-	if isAnthropic && executor.WantsThinkingSummaries(pipedBody) {
+	if isAnthropic && thinking.BodyMentionsThinking(pipedBody) && executor.WantsThinkingSummaries(pipedBody) {
 		providerCfg.StaticHeaders = providers.WithoutBetaFlag(
 			providerCfg.StaticHeaders, providers.AnthropicBetaRedactThinking,
 		)
@@ -675,6 +696,13 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	// the call itself is unconditional on non-Claude lanes.
 	if !upstreamClaude {
 		pipedBody = executor.InjectReasoningContent(pipedBody, provider)
+		if provider == "deepseek" {
+			// DeepSeek V4 models think by default and reject required/named
+			// tool_choice while thinking is on ("Thinking mode does not
+			// support this tool_choice"); downgrade the pin to auto so the
+			// turn is served instead of failing with 400.
+			pipedBody = executor.NormalizeDeepSeekThinkingToolChoice(pipedBody)
+		}
 	}
 
 	// Fit tool names exceeding MaxToolNameLength (64 chars) to prevent upstream HTTP 400.
@@ -711,6 +739,49 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		pipedBody = fastBody
 	}
 
+	// Unified thinking normalisation, outbound half (port of open-sse
+	// applyThinking and filterToOpenAIFormat). Runs last on the wire body so
+	// no converter can resurrect a dialect the target rejects. Claude-native
+	// clients author their own Claude thinking and keep their existing
+	// handling.
+	//
+	// The target format is the wire the upstream speaks, not the shape the
+	// client sent: a Responses-native upstream (opencode, muse, a custom
+	// node on a /responses endpoint) reads reasoning:{effort,summary} and
+	// rejects a top-level reasoning_effort, so the pass runs there too —
+	// upstream applies the thinking pass for every target format
+	// (open-sse/translator/index.js:137). The mandatory-reasoning clamp is
+	// part of the writer, so the Responses lane gets it as well.
+	if !claudeNative {
+		target := "openai"
+		switch {
+		case executor.UpstreamSpeaksResponses(provider, wireModel, providerCfg):
+			target = "openai-responses"
+		case isAnthropic || upstreamClaude:
+			// A provider whose own endpoint speaks the Messages format
+			// (minimax-code on the mavis gateway) gets the Claude wire: its
+			// body was converted above, and the OpenAI filter would strip the
+			// tool_use blocks and rewrite its tools into a shape the Messages
+			// API rejects.
+			target = "claude"
+		}
+		pipedBody = thinking.ApplyJSON(pipedBody, target, provider, wireModel, thinkingIntent)
+		if target == "openai" && !providerCfg.IsGeminiNative() {
+			filtered, filterErr := translator.FilterToOpenAIFormatJSON(pipedBody, translator.FilterOptions{
+				PreserveCacheControl: providers.PreservesCacheControl(provider),
+			})
+			if filterErr != nil {
+				// The request lost every message. The upstream answers an
+				// empty messages array with a 400, so the gateway says so
+				// itself instead of spending the call.
+				return &upstreamError{
+					StatusCode: http.StatusBadRequest,
+					Body:       []byte(`{"error":{"type":"invalid_request_error","message":"the request carries no messages"}}`),
+				}
+			}
+			pipedBody = filtered
+		}
+	}
 	start := time.Now()
 	metrics := &streamMetrics{}
 	var fwdErr error

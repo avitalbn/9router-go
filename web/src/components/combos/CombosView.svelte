@@ -182,6 +182,21 @@
       console.error('Failed to update combo strategy:', e)
     }
   }
+  // Respect stored order lives beside the strategy dropdown because it
+  // modifies how that strategy behaves: the rotation is skipped and the
+  // stored list is walked as-is. The capability reorder still runs, so a
+  // request that needs vision floats a capable model to the front.
+  async function handleToggleStoredOrder(combo: Combo, respect: boolean) {
+    const updated = { ...comboStrategies }
+    updated[combo.name] = { ...(updated[combo.name] || {}), respectStoredOrder: respect }
+    comboStrategies = updated
+    try {
+      await api.patchSettings({ comboStrategies: updated })
+      onRefresh()
+    } catch (e) {
+      console.error('Failed to update stored-order flag:', e)
+    }
+  }
 
   async function handleSetResponseTimeout(combo: Combo, timeoutMs: number) {
     const previous = comboStrategies
@@ -561,6 +576,7 @@
             {copiedId}
             onSetStrategy={handleSetStrategy}
             onSetResponseTimeout={handleSetResponseTimeout}
+            onToggleStoredOrder={handleToggleStoredOrder}
             onOpenJudgePicker={(c) => { editingCombo = c; openModelPicker('judge') }}
             onClearJudge={clearJudge}
             onOpenRouterPicker={(c) => { editingCombo = c; openModelPicker('router') }}

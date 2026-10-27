@@ -1452,12 +1452,43 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ matchRules }),
     }),
+  /** Materialise the previewed rules into the combo's membership (merge). */
+  loadComboRules: (id: string, matchRules: SmartRule[]) =>
+    request<{
+      combo: string
+      added: string[]
+      removed: string[]
+      models: string[]
+      changed: boolean
+    }>(`/api/combos/${encodeURIComponent(id)}/smart/load`, {
+      method: 'POST',
+      body: JSON.stringify({ matchRules }),
+    }),
   /** Apply every combo's rules now, or just the named one. */
   reconcileCombos: (id?: string) =>
     request<{ status: string; reconciled: number; added: string[]; removed: string[] }>(
       id ? `/api/combos/reconcile?id=${encodeURIComponent(id)}` : '/api/combos/reconcile',
       { method: 'POST' },
     ),
+  /** Everything the combo editor's sort dropdown knows about each model. */
+  getModelMeta: () =>
+    request<{
+      meta: Record<
+        string,
+        {
+          provider: string
+          model: string
+          ttftMs: number
+          totalMs: number
+          samples: number
+          contextWindow: number
+          kind: string
+          vision: boolean
+          reasoning: boolean
+          audioInput: boolean
+        }
+      >
+    }>('/api/models/meta'),
 
   // API Keys
   getApiKeys: () => request<APIKey[]>('/api/keys'),
@@ -2488,4 +2519,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ id: newId || '' }),
     }),
+  exportProviderKeys: (providerId: string) =>
+    request<{ connections: Array<{ id: string; name: string; authType: string; key: string }> }>(
+      `/api/providers/${encodeURIComponent(providerId)}/export-keys`,
+    ),
 }

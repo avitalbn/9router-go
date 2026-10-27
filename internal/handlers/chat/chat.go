@@ -8,6 +8,7 @@ import (
 	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/semanticcache"
+	"9router/proxy/internal/thinking"
 	"9router/proxy/internal/translator"
 	"9router/proxy/internal/updater"
 	"bytes"
@@ -61,6 +62,11 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// A "(level)" suffix is a request override, not part of the model id: it
+	// comes off the name before the name is resolved against the aliases and
+	// the combos, and the intent it carries travels on the context.
+	modelName, suffixIntent := thinking.ParseSuffix(reqBody.Model)
+
 	if reqBody.Model == "" {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing model")
 		return
@@ -75,7 +81,7 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 	// keepalive traffic never reaches a provider, so it is not an access
 	// request — and before resolveModel, so a denied model never reaches
 	// connection selection.
-	if !h.enforceModelAccess(w, r, reqBody.Model) {
+	if !h.enforceModelAccess(w, r, modelName) {
 		return
 	}
 
@@ -85,7 +91,11 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 	// outlive the request (docs/provider-limits-plan.md D7).
 	ctx = withProviderLimitState(ctx)
 	ctx = handlerutil.WithClientAnthropicBeta(ctx, r.Header.Get("anthropic-beta"))
-	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(reqBody.Model))
+	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(modelName))
+	ctx = thinking.WithSuffixIntent(ctx, suffixIntent)
+	// The operator's providerThinking overrides are read once here, not once
+	// per connection attempt.
+	ctx = h.withProviderThinkingModes(ctx)
 	// Record the dispatching key so the outbound guardrail tap can resolve the
 	// right policy. A keyless caller leaves it unset and the tap stays inert.
 	ctx = withGuardrailKey(ctx, requestKeyID(r))
@@ -118,7 +128,7 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	modelInfo, err := h.resolveModel(reqBody.Model)
+	modelInfo, err := h.resolveModel(modelName)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
@@ -134,6 +144,11 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 			h.handleFusion(ctx, w, body, modelInfo.ComboModels, modelInfo.Strategy, reqBody.Stream, false, reqBody.Model, modelInfo.StickyLimit, modelInfo.JudgeModel)
 			return
 		}
+		// Media from old turns rides in the history even when the current turn
+		// is text-only. When no candidate can serve it, strip it rather than
+		// let a text-only upstream reject the whole conversation on a block
+		// this turn does not need.
+		body = maybeStripLegacyMediaBytes(body, augmented)
 		h.handleComboFallback(ctx, w, body, augmented, comboStrategy, reqBody.Stream, false, reqBody.Model, modelInfo.StickyLimit, injected...)
 		return
 	}
@@ -144,6 +159,7 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		targetEntry = modelInfo.Provider + "/" + modelInfo.Model
 	}
 	augmented, strat := h.AugmentModelsWithCapacityAdapter([]string{targetEntry}, requiredCaps, requestKeyID(r))
+	body = maybeStripLegacyMediaBytes(body, augmented)
 	if len(augmented) > 1 {
 		injected := augmented[:len(augmented)-1]
 		log.Info("chat", "capacity adapter auto-switch", "target", reqBody.Model, "switched_to", augmented[0], "caps", keysString(requiredCaps))
@@ -192,7 +208,7 @@ func (h *ChatHandler) handleSingleModel(ctx context.Context, w http.ResponseWrit
 	// The client's model id is the jailbreak key; rewrite the body to the
 	// resolved upstream model first, then inject against the original id.
 	requestedModel, _ := upstreamBody["model"].(string)
-	upstreamBody["model"] = modelInfo.Model
+	upstreamBody["model"] = h.wireModelForNode(modelInfo.Provider, modelInfo.Model)
 	repairToolCallIDsInMap(upstreamBody)
 	ctx = h.applyJailbreak(ctx, upstreamBody, requestedModel, jailbreakLegIDs(modelInfo.Provider, modelInfo.Model)...)
 	upstreamJSON, err := json.Marshal(upstreamBody)
@@ -248,6 +264,11 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A "(level)" suffix is a request override, not part of the model id: it
+	// comes off the name before the name is resolved against the aliases and
+	// the combos, and the intent it carries travels on the context.
+	modelName, suffixIntent := thinking.ParseSuffix(reqBody.Model)
+
 	if reqBody.Model == "" {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing model")
 		return
@@ -255,11 +276,11 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 
 	// Per-key model policy: 403 before any translation work or connection
 	// selection.
-	if !h.enforceModelAccess(w, r, reqBody.Model) {
+	if !h.enforceModelAccess(w, r, modelName) {
 		return
 	}
 
-	modelInfo, err := h.resolveModel(reqBody.Model)
+	modelInfo, err := h.resolveModel(modelName)
 	if err != nil {
 		log.Error("chat", "resolve model failed", "error", err, "model", reqBody.Model)
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
@@ -308,7 +329,11 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	workingBody["stream"] = reqBody.Stream
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
 	ctx = withProviderLimitState(ctx)
-	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(reqBody.Model))
+	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(modelName))
+	ctx = thinking.WithSuffixIntent(ctx, suffixIntent)
+	// The operator's providerThinking overrides are read once here, not once
+	// per connection attempt.
+	ctx = h.withProviderThinkingModes(ctx)
 	// Record the dispatching key so the outbound guardrail tap can resolve the
 	// policy scoped to it. A keyless caller leaves it unset and the tap stays
 	// inert.
@@ -327,6 +352,13 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 			h.handleFusion(ctx, w, bodyJSON, modelInfo.ComboModels, modelInfo.Strategy, reqBody.Stream, translateResponse, reqBody.Model, modelInfo.StickyLimit, modelInfo.JudgeModel)
 			return
 		}
+		// Media from old turns rides in the history even when the current turn
+		// is text-only. When no candidate can serve it, strip it rather than
+		// let a text-only upstream reject the whole conversation on a block
+		// this turn does not need.
+		if cleaned, changed := maybeStripLegacyMedia(workingBody, augmented); changed {
+			workingBody = cleaned
+		}
 		h.handleMessagesComboFallback(ctx, w, workingBody, augmented, comboStrategy, reqBody.Stream, reqBody.Model, modelInfo.StickyLimit, injected...)
 		return
 	}
@@ -337,6 +369,9 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		targetEntry = modelInfo.Provider + "/" + modelInfo.Model
 	}
 	augmented, strat := h.AugmentModelsWithCapacityAdapter([]string{targetEntry}, requiredCaps, requestKeyID(r))
+	if cleaned, changed := maybeStripLegacyMedia(workingBody, augmented); changed {
+		workingBody = cleaned
+	}
 	if len(augmented) > 1 {
 		injected := augmented[:len(augmented)-1]
 		log.Info("chat", "capacity adapter auto-switch messages", "target", reqBody.Model, "switched_to", augmented[0], "caps", keysString(requiredCaps))
@@ -353,7 +388,7 @@ func (h *ChatHandler) handleMessagesSingleModel(ctx context.Context, w http.Resp
 	// The client's model id is the jailbreak key; rewrite the body to the
 	// resolved upstream model first, then inject against the original id.
 	requestedModel, _ := translatedReq["model"].(string)
-	translatedReq["model"] = modelInfo.Model
+	translatedReq["model"] = h.wireModelForNode(modelInfo.Provider, modelInfo.Model)
 	ctx = h.applyJailbreak(ctx, translatedReq, requestedModel, jailbreakLegIDs(modelInfo.Provider, modelInfo.Model)...)
 	finalBody, err := json.Marshal(translatedReq)
 	if err != nil {

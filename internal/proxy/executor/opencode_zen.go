@@ -35,8 +35,10 @@ const (
 // zenBaseURL resolves the API prefix of the request's base URL: the registry
 // default, a connection override, or a relay host with the path carried in
 // x-relay-path. Free-tier models answer behind the keyless v2 inference gate
-// (keyed /zen/v1 requests for them 403), so the prefix follows the model.
-func zenBaseURL(cfg *providers.ProviderConfig, cleanModel string) string {
+// (keyed /zen/v1 requests for them 403), so the prefix follows the model and
+// the lane: the v2 gate only serves the OpenAI-compatible surface, so the
+// messages lane keeps the legacy prefix (see zenFreePrefix).
+func zenBaseURL(cfg *providers.ProviderConfig, cleanModel, lanePath string) string {
 	if cfg == nil {
 		return ""
 	}
@@ -44,6 +46,9 @@ func zenBaseURL(cfg *providers.ProviderConfig, cleanModel string) string {
 		return strings.TrimRight(cfg.BaseURL, "/")
 	}
 	if isOpencodeFreeModel(cleanModel) {
+		if lanePath == zenMessagesPath {
+			return opencodeMessagesInferenceBase(cfg.BaseURL)
+		}
 		return opencodeInferenceBase(cfg.BaseURL)
 	}
 	base := strings.TrimRight(cfg.BaseURL, "/")
@@ -196,7 +201,7 @@ func zenHeaders(cfg *providers.ProviderConfig, session string, stream bool, free
 	headers := proxy.BuildOpenCodeHeaders(nil, session, stream)
 	if !free {
 		// The keyed lane keeps the v1 identity: upstream leaves opencode-zen
-		// on opencode/1.18.31 + desktop while only the keyless free executor
+		// on opencode/1.19.4 + desktop while only the keyless free executor
 		// moves to v2. Free-tier models keep the v2 cli identity above, which
 		// is what the inference gate expects alongside Bearer public.
 		headers["x-opencode-client"] = "desktop"
@@ -218,6 +223,18 @@ func zenHeaders(cfg *providers.ProviderConfig, session string, stream bool, free
 	return headers
 }
 
+// zenFreePrefix reports the inference-gate prefix a free model's lane travels
+// on. Chat and Responses live under the v2 gate's OpenAI-compatible surface
+// (/inference/openai/v1); the Messages endpoint was never migrated — the v2
+// prefix 404s it — so a free id on the messages lane keeps the legacy
+// /inference/v1 prefix, which still serves POST /messages.
+func zenFreePrefix(lanePath string) string {
+	if lanePath == zenMessagesPath {
+		return "/inference/v1"
+	}
+	return "/inference/openai/v1"
+}
+
 // zenRelayPath reports the path an edge relay should forward to for a Zen lane.
 // The relay header set is stamped from the connection's base URL
 // (BuildEdgeRelayHeaders), so the path it carries is whatever lane that base
@@ -227,8 +244,9 @@ func zenRelayPath(cfg *providers.ProviderConfig, cleanModel, lanePath string) st
 	prefix := "/zen/v1"
 	if isOpencodeFreeModel(cleanModel) {
 		// Free-tier models live behind the v2 inference gate, so their lane
-		// carries the /inference/v1 prefix instead of /zen/v1.
-		prefix = "/inference/v1"
+		// carries the inference prefix instead of /zen/v1 — except messages,
+		// which the v2 gate does not serve (zenFreePrefix).
+		prefix = zenFreePrefix(lanePath)
 	}
 	if cfg != nil {
 		if target := cfg.StaticHeaders["x-relay-target"]; target != "" {
@@ -271,6 +289,7 @@ func forwardZenChat(w http.ResponseWriter, req *Request, cleanModel, sourceForma
 	var zenToolNameMap map[string]string
 	if free {
 		body, zenToolNameMap = translator.ConcealOpenCodeV2FingerprintTools(body, false, isOpenCodeAutoToolChoiceModel(cleanModel))
+		body = translator.ApplyFingerprintSystemPrompt(body)
 		if req.IsStream {
 			w = NewOpenCodeExecuteBridgeWriter(w)
 		}
@@ -291,7 +310,7 @@ func forwardZenChat(w http.ResponseWriter, req *Request, cleanModel, sourceForma
 		cfg.StaticHeaders["x-relay-path"] = zenRelayPath(req.Config, cleanModel, "/chat/completions")
 		cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/") + "/chat/completions"
 	} else {
-		cfg.BaseURL = zenBaseURL(&cfg, cleanModel) + "/chat/completions"
+		cfg.BaseURL = zenBaseURL(&cfg, cleanModel, "/chat/completions") + "/chat/completions"
 	}
 	zenHint := opencodeSessionHint(req, free)
 	cfg.StaticHeaders = zenHeaders(&cfg, zenHint, true, free)
@@ -358,6 +377,7 @@ func forwardZenResponses(w http.ResponseWriter, req *Request, cleanModel, source
 	var toolNameMap map[string]string
 	if free {
 		body, toolNameMap = translator.ConcealOpenCodeV2FingerprintTools(body, true, isOpenCodeAutoToolChoiceModel(cleanModel))
+		body = translator.ApplyFingerprintSystemPrompt(body)
 	} else {
 		body, toolNameMap = translator.ConcealFingerprintTools(body)
 	}
@@ -375,7 +395,7 @@ func forwardZenResponses(w http.ResponseWriter, req *Request, cleanModel, source
 		cfg.StaticHeaders["x-relay-path"] = zenRelayPath(req.Config, cleanModel, zenResponsesPath)
 		cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/") + zenResponsesPath
 	} else {
-		cfg.BaseURL = zenBaseURL(&cfg, cleanModel) + zenResponsesPath
+		cfg.BaseURL = zenBaseURL(&cfg, cleanModel, zenResponsesPath) + zenResponsesPath
 	}
 	// zenHeaders reads from the copy so the relay headers just set survive.
 	zenHint := opencodeSessionHint(req, free)
@@ -462,7 +482,7 @@ func forwardZenMessages(w http.ResponseWriter, req *Request, cleanModel string, 
 
 	// An edge relay carries the destination in headers, so the lane belongs in
 	// x-relay-path rather than in the URL the gateway dials.
-	messagesURL := zenBaseURL(req.Config, cleanModel) + zenMessagesPath
+	messagesURL := zenBaseURL(req.Config, cleanModel, zenMessagesPath) + zenMessagesPath
 	if isRelayConfig(req.Config) {
 		headers["x-relay-path"] = zenRelayPath(req.Config, cleanModel, zenMessagesPath)
 		messagesURL = strings.TrimRight(req.Config.BaseURL, "/") + zenMessagesPath

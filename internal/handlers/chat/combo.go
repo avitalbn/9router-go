@@ -418,6 +418,29 @@ func modelEntryCaps(modelEntry string) providers.Capabilities {
 	return providers.GetCapabilitiesForModel(provider, model)
 }
 
+// comboRespectsStoredOrder reports whether this combo asked to skip the
+// rotation strategy and walk its stored model list in order. The flag lives in
+// the combo's own strategy row (settings.comboStrategies[name]) so it can
+// differ per combo, the same place smartPolicy and sessionSticky live.
+//
+// A settings read that fails is treated as "not set" rather than as an error:
+// the caller is mid-request with a combo to route, and the rotation strategy
+// is the behaviour every combo had before the flag existed.
+func (h *ChatHandler) comboRespectsStoredOrder(comboName string) bool {
+	if h.Repo == nil || comboName == "" {
+		return false
+	}
+	settings, err := h.Repo.GetSettings()
+	if err != nil || settings == nil {
+		return false
+	}
+	cfg, ok := settings.ComboStrategies[comboName]
+	if !ok {
+		return false
+	}
+	return cfg.RespectStoredOrder
+}
+
 // ApplyComboStrategy rotates the array of models based on the selected strategy.
 // It treats every call as a new turn (backward-compatible wrapper).
 func (h *ChatHandler) ApplyComboStrategy(strategy string, models []string, comboName string, stickyLimit int) []string {
@@ -524,6 +547,9 @@ func upstreamErrorBody(message string) []byte {
 // adapterModels holds the capacity-adapter entries injected for this request;
 // their history is trimmed to their context window before forwarding.
 func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWriter, body []byte, comboModels []string, strategy string, isStream bool, translateResponse bool, comboName string, stickyLimit int, adapterModels ...string) {
+	if FallbackAttemptRecorderFrom(ctx) == nil {
+		ctx = WithFallbackAttemptRecorder(ctx, NewFallbackAttemptRecorder())
+	}
 	cw := newCommittedResponseWriter(w)
 	cw.stream = isStream
 	var lastErr *upstreamError
@@ -537,9 +563,17 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 	// 1. Apply combo rotation strategy first. The smart strategy orders the
 	// models itself (System One evaluation + session stickiness) and carries
 	// its routing state on the context for the failure loop below.
+	//
+	// RespectStoredOrder skips the rotation and walks the stored list as-is,
+	// so the order the operator arranged in the editor is the fallback chain.
+	// The smart strategy is exempt: it orders the models itself and already
+	// keeps the combo's own order on every failure path, so honouring the flag
+	// there would fight the evaluation it exists to perform.
 	var models []string
 	if strategy == "smart" {
 		ctx, models = h.applySmartRouting(ctx, body, comboModels, comboName)
+	} else if h.comboRespectsStoredOrder(comboName) {
+		models = slices.Clone(comboModels)
 	} else {
 		models = h.applyComboStrategy(strategy, comboModels, comboName, stickyLimit, detectNewTurn(body))
 	}
@@ -657,10 +691,10 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 					handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to parse request body")
 					return
 				}
-				upstreamBody["model"] = modelInfo.Model
+				upstreamBody["model"] = h.wireModelForNode(modelInfo.Provider, modelInfo.Model)
 				repairToolCallIDsInMap(upstreamBody)
 				candidateCtx = h.applyJailbreak(candidateCtx, upstreamBody, comboName, jailbreakLegIDs(modelInfo.Provider, modelInfo.Model)...)
-				upstreamJSON, err := json.Marshal(upstreamBody)
+				upstreamJSON, err := json.Marshal(upstreamBody, json.Deterministic(true))
 				if err != nil {
 					break
 				}
@@ -675,8 +709,10 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 					streamPeeker = internalproxy.NewStreamContentPeeker(candidateWriter)
 					targetWriter = streamPeeker
 				}
+				attemptStart := time.Now()
 				if modelInfo.Provider == "mimo-free" {
 					comboMetrics := &streamMetrics{}
+					upstreamJSON = clampMimoFreeReasoning(upstreamJSON, modelInfo.Model)
 					fwdErr = h.MimoFreeChat(fwdCtx, targetWriter, upstreamJSON, isStream, comboMetrics)
 				} else {
 					fwdErr = h.tryForwardWithConnection(forwardRequestParams{
@@ -696,6 +732,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 						fwdErr = finishErr
 					}
 				}
+				RecordAttemptFromContext(ctx, connID, connObjName(picked), modelInfo.Provider, modelInfo.Model, 0, fwdErr, time.Since(attemptStart).Milliseconds())
 
 				if fwdErr != nil {
 					if timeoutGate != nil && timeoutGate.timedOut() && ctx.Err() == nil {
@@ -858,6 +895,9 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 // adapterModels holds the capacity-adapter entries injected for this request;
 // their history is trimmed to their context window before forwarding.
 func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.ResponseWriter, translatedReq map[string]any, comboModels []string, strategy string, isStream bool, comboName string, stickyLimit int, adapterModels ...string) {
+	if FallbackAttemptRecorderFrom(ctx) == nil {
+		ctx = WithFallbackAttemptRecorder(ctx, NewFallbackAttemptRecorder())
+	}
 	cw := newCommittedResponseWriter(w)
 	cw.stream = isStream
 	var lastErr *upstreamError
@@ -873,6 +913,8 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 	var models []string
 	if strategy == "smart" {
 		ctx, models = h.applySmartRouting(ctx, bodyJSON, comboModels, comboName)
+	} else if h.comboRespectsStoredOrder(comboName) {
+		models = slices.Clone(comboModels)
 	} else {
 		models = h.applyComboStrategy(strategy, comboModels, comboName, stickyLimit, detectNewTurn(bodyJSON))
 	}
@@ -976,10 +1018,10 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 					handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to parse request body")
 					return
 				}
-				entryBody["model"] = modelInfo.Model
+				entryBody["model"] = h.wireModelForNode(modelInfo.Provider, modelInfo.Model)
 				candidateCtx = h.applyJailbreak(candidateCtx, entryBody, comboName, jailbreakLegIDs(modelInfo.Provider, modelInfo.Model)...)
 
-				upstreamJSON, err := json.Marshal(entryBody)
+				upstreamJSON, err := json.Marshal(entryBody, json.Deterministic(true))
 				if err != nil {
 					break
 				}
@@ -993,6 +1035,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 					streamPeeker = internalproxy.NewStreamContentPeeker(candidateWriter)
 					targetWriter = streamPeeker
 				}
+				attemptStart := time.Now()
 				fwdErr := h.tryForwardWithConnection(forwardRequestParams{
 					Ctx: fwdCtx, W: targetWriter, Provider: modelInfo.Provider, Model: modelInfo.Model,
 					RequestedModel: comboName, ComboName: comboName,
@@ -1009,6 +1052,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 						fwdErr = finishErr
 					}
 				}
+				RecordAttemptFromContext(ctx, connID, connObjName(picked), modelInfo.Provider, modelInfo.Model, 0, fwdErr, time.Since(attemptStart).Milliseconds())
 
 				if fwdErr != nil {
 					if timeoutGate != nil && timeoutGate.timedOut() && ctx.Err() == nil {
@@ -1189,7 +1233,7 @@ func (h *ChatHandler) comboLockRetryable(ctx context.Context, excludeIDs *[]stri
 	if !cls.ShouldFallback || cls.CooldownMs <= 0 {
 		return
 	}
-	cooldownSec := retryableCooldownSec(ue.StatusCode, time.Duration(cls.CooldownMs)*time.Millisecond, ue)
+	cooldownSec := retryableCooldownSec(ue.StatusCode, time.Duration(cls.CooldownMs)*time.Millisecond, ue, provider)
 	lockKey := canonicalLockModel(provider, model)
 	if err := h.Repo.LockConnectionModel(connID, lockKey, cooldownSec, cls.NewBackoffLevel); err != nil {
 		log.Warn("combo", "lock failed", "conn", connID, "provider", provider, "model", lockKey, "error", err)

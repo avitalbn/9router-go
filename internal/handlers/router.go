@@ -86,7 +86,10 @@ func SetupRoutes(r interface {
 	r.Post("/responses", chatH.HandleResponses)
 	r.Post("/responses/compact", chatH.HandleResponsesCompact)
 	r.Post("/images/generations", mediaH.HandleImages)
+	r.Post("/images/edits", mediaH.HandleImageEdits)
 	r.Post("/audio/speech", mediaH.HandleAudioSpeech)
+	r.Post("/audio/music", mediaH.HandleAudioMusic)
+	r.Post("/v1/audio/music", mediaH.HandleAudioMusic)
 	r.Get("/audio/voices", mediaH.HandleAudioVoices)
 	r.Get("/api/media-providers/tts/voices", mediaH.HandleAudioVoices)
 	r.Get("/api/media-providers/tts/inworld/voices", mediaH.HandleAudioVoices)
@@ -258,6 +261,7 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Put("/api/provider-nodes/{id}/limits", dashH.HandleUpdateProviderNodeLimits)
 	r.Post("/api/provider-nodes/{id}/quota/reset", dashH.HandleResetProviderNodeQuota)
 	r.Get("/api/providers/{id}/models", dashH.HandleGetConnectionModels)
+	r.Get("/api/providers/{id}/export-keys", dashH.HandleExportProviderKeys)
 	// Bulk removal of a node's imported models; the single-row form stays at
 	// DELETE /api/models/custom/{key}.
 	r.Delete("/api/providers/{id}/models", dashH.HandleDeleteProviderModels)
@@ -279,6 +283,8 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	// smart-rules editor shipped.
 	r.Post("/api/combos/reconcile", dashH.HandleReconcileSmartCombos)
 	r.Post("/api/combos/{id}/smart/preview", dashH.HandleComboSmartPreview)
+	r.Post("/api/combos/{id}/smart/load", dashH.HandleComboSmartLoad)
+	r.Get("/api/models/meta", dashH.HandleGetModelMeta)
 	r.Delete("/api/combos/{id}", dashH.HandleDeleteCombo)
 
 	r.Get("/api/proxy-pools", dashH.HandleGetProxyPools)

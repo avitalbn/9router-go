@@ -36,6 +36,7 @@
     copiedId?: string | null
     onSetStrategy: (combo: Combo, strategy: string) => void
     onSetResponseTimeout: (combo: Combo, timeoutMs: number) => void
+    onToggleStoredOrder: (combo: Combo, respect: boolean) => void
     onOpenJudgePicker: (combo: Combo) => void
     onClearJudge: (comboName: string) => void
     onOpenRouterPicker: (combo: Combo) => void
@@ -54,6 +55,7 @@
     copiedId = null,
     onSetStrategy,
     onSetResponseTimeout,
+    onToggleStoredOrder,
     onOpenJudgePicker,
     onClearJudge,
     onOpenRouterPicker,
@@ -239,6 +241,23 @@
             <option value={strategy.value}>{strategy.label}</option>
           {/each}
         </select>
+        <!-- Respect stored order: skip the rotation and walk the list as it
+             was arranged. Hidden for the smart strategy, which orders the
+             models itself and would ignore the flag anyway. -->
+        {#if !isSmart}
+          <label
+            class="mt-1.5 flex cursor-pointer items-center gap-1.5 text-[10px] text-text-muted hover:text-text-main select-none"
+            title="Skip the rotation strategy and try models in the order shown. A request that needs vision still floats a capable model to the front."
+          >
+            <input
+              type="checkbox"
+              checked={strategyInfo.respectStoredOrder === true}
+              onchange={(e) => onToggleStoredOrder(combo, e.currentTarget.checked)}
+              class="size-3 shrink-0 cursor-pointer accent-brand-500"
+            />
+            <span>Respect stored order</span>
+          </label>
+        {/if}
       </div>
 
       <!-- Icon buttons with labels -->

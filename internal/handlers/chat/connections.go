@@ -21,6 +21,7 @@ import (
 	internalproxy "9router/proxy/internal/proxy"
 	"9router/proxy/internal/proxy/oauth"
 	"9router/proxy/internal/translator"
+	"9router/proxy/internal/updater"
 )
 
 // CredentialFallbacks maps search/tool providers to the primary chat provider whose API key can be reused.
@@ -687,11 +688,24 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 			cloned := *baseCfg
 			cloned.StaticHeaders = internalproxy.BuildEdgeRelayHeaders(baseCfg.BaseURL, cloned.StaticHeaders)
 			cloned.BaseURL = relayURL
-			return h.applyProviderOverrides(provider, &cloned), nil
+			return h.applyProviderOverrides(provider, h.withClineIdentity(provider, &cloned)), nil
 		}
 	}
 
-	return h.applyProviderOverrides(provider, baseCfg), nil
+	return h.applyProviderOverrides(provider, h.withClineIdentity(provider, baseCfg)), nil
+}
+
+// withClineIdentity stamps the 9Router client identity onto cline/clinepass
+// configs (upstream buildClineHeaders). The version comes from the linked
+// binary; the registry literal cannot carry it (import cycle), so it is
+// applied here per request on the already-cloned config.
+func (h *ChatHandler) withClineIdentity(provider string, cfg *providers.ProviderConfig) *providers.ProviderConfig {
+	if cfg == nil || (provider != "cline" && provider != "clinepass") {
+		return cfg
+	}
+	cloned := *cfg
+	cloned.StaticHeaders = providers.ClineIdentityHeaders(updater.CurrentVersion, cfg.StaticHeaders)
+	return &cloned
 }
 
 // chatCompletionsURL completes a configured endpoint into the chat-completions
@@ -769,11 +783,20 @@ func isDigits(s string) bool {
 // applyProviderOverrides merges the operator's stored header overrides for a
 // provider into a per-request config.
 //
-// This is the single injection point on purpose: every executor builds its
-// outbound headers from cfg.StaticHeaders, so merging here reaches all of
-// them without each one learning the feature. It is also after the relay
-// rewrite, so a relay's own headers are on the table the override wins over —
-// which is what upstream's executor-level merge does too.
+// This is the single injection point: every executor builds its outbound
+// headers from cfg, so merging here reaches all of them without each one
+// learning the feature. It is also after the relay rewrite, so a relay's own
+// headers are on the table the override wins over — which is what upstream's
+// executor-level merge does too.
+//
+// The overrides are recorded twice, on purpose. Folding them into
+// StaticHeaders is what every forwarder already reads, so nothing that builds
+// its own header map from that field changes behaviour. Carrying them in
+// HeaderOverrides as well lets a forwarder that assembles the map itself
+// (CodeBuddy rebuilds the full channel-verification set) re-apply them after
+// its own values, which is the order upstream uses
+// (open-sse/executors/base.js:132). Without the second copy such an executor
+// silently replaces an override the dashboard accepted.
 func (h *ChatHandler) applyProviderOverrides(provider string, cfg *providers.ProviderConfig) *providers.ProviderConfig {
 	if cfg == nil || h.Repo == nil {
 		return cfg
@@ -784,6 +807,7 @@ func (h *ChatHandler) applyProviderOverrides(provider string, cfg *providers.Pro
 	}
 	merged := *cfg
 	merged.StaticHeaders = providers.MergeHeaderOverrides(cfg.StaticHeaders, stored.Headers)
+	merged.HeaderOverrides = stored.Headers
 	return &merged
 }
 
