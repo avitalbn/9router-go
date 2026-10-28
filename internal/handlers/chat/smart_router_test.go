@@ -196,7 +196,14 @@ func newSmartRouterHandler(t *testing.T, upstream *httptest.Server) *ChatHandler
 	t.Helper()
 	database, cleanup := setupChatTestDB(t)
 	t.Cleanup(cleanup)
+	stubDefaultSmartRouter(t, upstream)
+	return NewChatHandler(db.NewRepo(database))
+}
 
+// stubDefaultSmartRouter points the provider behind the default router model
+// (oc/jev-1.13-free) at a fake System One endpoint for the test's lifetime.
+func stubDefaultSmartRouter(t *testing.T, upstream *httptest.Server) {
+	t.Helper()
 	previous, known := providers.KnownProviders["opencode"]
 	overridden := providers.ProviderConfig{BaseURL: upstream.URL + "/v1/chat/completions", AuthHeader: "Authorization", AuthScheme: "bearer", NoAuth: true, SystemoneURL: upstream.URL + "/v1/systemone"}
 	providers.KnownProviders["opencode"] = overridden
@@ -207,7 +214,6 @@ func newSmartRouterHandler(t *testing.T, upstream *httptest.Server) *ChatHandler
 			delete(providers.KnownProviders, "opencode")
 		}
 	})
-	return NewChatHandler(db.NewRepo(database))
 }
 
 func TestResolveSmartChoice(t *testing.T) {
