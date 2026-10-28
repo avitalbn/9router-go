@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -68,8 +69,12 @@ func TestComboModelResponseTimeoutEndpoints(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				var stalledCalls atomic.Int32
 				release := make(chan struct{})
+				aborted := make(chan struct{}, 1)
 				stalled := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					stalledCalls.Add(1)
+					// Read the body as a real provider does; until it is
+					// consumed net/http cannot see the gateway hang up.
+					_, _ = io.Copy(io.Discard, r.Body)
 					// Stream headers and a role-only frame are not usable content.
 					// Non-streaming requests exercise a stall before headers.
 					if stream {
@@ -79,6 +84,7 @@ func TestComboModelResponseTimeoutEndpoints(t *testing.T) {
 					}
 					select {
 					case <-r.Context().Done():
+						aborted <- struct{}{}
 					case <-release:
 					}
 				}))
@@ -121,6 +127,13 @@ func TestComboModelResponseTimeoutEndpoints(t *testing.T) {
 				}
 				if locked, _ := repo.IsConnectionModelLocked("mock-a", "deepseek-chat"); locked {
 					t.Fatal("model timeout locked account")
+				}
+				// The timed-out request must be hung up, not left running
+				// upstream after the client was answered.
+				select {
+				case <-aborted:
+				case <-time.After(2 * time.Second):
+					t.Error("timed-out model's upstream request was never aborted")
 				}
 			})
 		}
@@ -201,10 +214,13 @@ func TestComboTimeoutGracePeriod(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var stalledCalls atomic.Int32
 			release := make(chan struct{})
+			aborted := make(chan struct{}, 2)
 			stalled := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				stalledCalls.Add(1)
+				_, _ = io.Copy(io.Discard, r.Body)
 				select {
 				case <-r.Context().Done():
+					aborted <- struct{}{}
 				case <-release:
 				}
 			}))
@@ -231,6 +247,13 @@ func TestComboTimeoutGracePeriod(t *testing.T) {
 			}
 			if got := stalledCalls.Load(); got != tc.wantStalledOn {
 				t.Fatalf("stalled model hit %d times, want %d", got, tc.wantStalledOn)
+			}
+			for i := int32(0); i < tc.wantStalledOn; i++ {
+				select {
+				case <-aborted:
+				case <-time.After(2 * time.Second):
+					t.Fatalf("timed-out request %d was never aborted upstream", i+1)
+				}
 			}
 		})
 	}

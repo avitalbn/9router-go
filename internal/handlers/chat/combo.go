@@ -554,6 +554,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 	cw.stream = isStream
 	cw.responsesClient = translator.IsResponsesClient(ctx)
 	var lastErr *upstreamError
+	var connFailures comboConnFailures
 	var retry passRetry
 	responseTimeout, timeoutGrace := h.comboTimeoutPolicy(comboName)
 	modelTimedOut := false
@@ -608,6 +609,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 			// Fresh pass: re-allow connections locked by the previous attempt
 			// (their cooldown has elapsed) and clear the error state.
 			lastErr = nil
+			connFailures = nil
 			retry.reset()
 			excludeIDs = nil
 		}
@@ -617,8 +619,6 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 			if modelInfo == nil {
 				continue
 			}
-			isLastModel := i == len(models)-1
-
 			// Skip unavailable (model-locked) providers
 			if !h.Repo.IsProviderAvailable(modelInfo.Provider, modelInfo.Model) {
 				log.Warn("combo", "skip unhealthy", "provider", modelInfo.Provider, "model", modelInfo.Model)
@@ -628,11 +628,13 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				continue
 			}
 
-			candidateCtx := ctx
-			candidateWriter := http.ResponseWriter(cw)
 			// The last candidate keeps the global deadline: the response
 			// timeout only advances a combo, it never makes one fail sooner
-			// than it would without the setting (#744).
+			// than it would without the setting (#744). "Last" is the last
+			// member that can still be dispatched, not the last index (#776).
+			isLastModel := h.comboIsLastTriable(models, i, excludeIDs)
+			candidateCtx := ctx
+			candidateWriter := http.ResponseWriter(cw)
 			var timeoutGate *comboResponseTimeout
 			if responseTimeout > 0 && !isLastModel {
 				timeoutGate = newComboResponseTimeout(ctx, cw, responseTimeout)
@@ -670,6 +672,8 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 							if refusedErr != nil {
 								lastErr = refusedErr
 							}
+						} else {
+							connFailures.note(err)
 						}
 						break
 					}
@@ -881,6 +885,9 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 		}
 	}
 
+	if lastErr == nil {
+		lastErr = connFailures.terminalError()
+	}
 	if lastErr != nil {
 		if cw.IsCommitted() {
 			log.Error("combo", "upstream error after headers committed", "error", lastErr)
@@ -907,6 +914,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 	cw.stream = isStream
 	cw.responsesClient = translator.IsResponsesClient(ctx)
 	var lastErr *upstreamError
+	var connFailures comboConnFailures
 	var retry passRetry
 	responseTimeout, timeoutGrace := h.comboTimeoutPolicy(comboName)
 	modelTimedOut := false
@@ -948,6 +956,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			// Fresh pass: re-allow connections locked by the previous attempt
 			// (their cooldown has elapsed) and clear the error state.
 			lastErr = nil
+			connFailures = nil
 			retry.reset()
 			excludeIDs = nil
 		}
@@ -957,8 +966,6 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			if modelInfo == nil {
 				continue
 			}
-			isLastModel := i == len(models)-1
-
 			// Skip unavailable (model-locked) providers
 			if !h.Repo.IsProviderAvailable(modelInfo.Provider, modelInfo.Model) {
 				log.Warn("combo", "skip unhealthy", "provider", modelInfo.Provider, "model", modelInfo.Model)
@@ -969,7 +976,9 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			}
 			candidateCtx := ctx
 			candidateWriter := http.ResponseWriter(cw)
-			// See the chat loop: the last candidate keeps the global deadline.
+			// See the chat loop: the last dispatchable candidate keeps the
+			// global deadline.
+			isLastModel := h.comboIsLastTriable(models, i, excludeIDs)
 			var timeoutGate *comboResponseTimeout
 			if responseTimeout > 0 && !isLastModel {
 				timeoutGate = newComboResponseTimeout(ctx, cw, responseTimeout)
@@ -1003,6 +1012,8 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 							if refusedErr != nil {
 								lastErr = refusedErr
 							}
+						} else {
+							connFailures.note(err)
 						}
 						break
 					}
@@ -1193,6 +1204,9 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 		}
 	}
 
+	if lastErr == nil {
+		lastErr = connFailures.terminalError()
+	}
 	if lastErr != nil {
 		if cw.IsCommitted() {
 			log.Error("combo", "upstream error after headers committed", "error", lastErr)

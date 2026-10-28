@@ -184,7 +184,9 @@ candidate except the last, including connection selection and waiting for a
 usable response. If it expires before output is committed, the router cancels
 that candidate and tries the next. The last candidate keeps the gateway's
 normal deadline, so the setting never makes a combo fail sooner than it would
-without it (#744). An active stream is not cut off by this setting. For
+without it (#744). "Last" means the last member the router can still dispatch:
+a later entry that is model-locked, does not resolve, or has no usable
+connection does not count (#776). An active stream is not cut off by this setting. For
 non-streaming requests, the timer covers the wait for the complete response.
 Fusion panel timing is separate. A model that times out is left out of that
 combo for a
