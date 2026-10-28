@@ -288,12 +288,12 @@ func PrefetchInlineImages(ctx context.Context, body []byte, opts PrefetchOptions
 		return body
 	}
 
-	encoded, err := json.Marshal(items)
+	encoded, err := json.Marshal(items, json.Deterministic(true))
 	if err != nil {
 		return body
 	}
 	raw[key] = jsontext.Value(encoded)
-	out, err := json.Marshal(raw)
+	out, err := json.Marshal(raw, json.Deterministic(true))
 	if err != nil {
 		return body
 	}

@@ -3263,47 +3263,49 @@
     </button>
 
     <div class="flex min-w-0 items-center justify-between gap-3 sm:gap-4">
-      <div
-        class="flex size-12 shrink-0 items-center justify-center rounded-lg"
-        style="background-color: {providerColor}15;"
-      >
-        <ProviderIcon
-          id={providerId}
-          apiType={selectedNode?.apiType}
-          size="lg"
-          class="border-transparent bg-transparent"
-        />
-      </div>
-
-      <div class="min-w-0">
-        <div class="flex items-center gap-3 flex-wrap">
-          <h1 class="truncate text-2xl font-semibold tracking-tight sm:text-3xl">
-            {providerName}
-          </h1>
-          {#if providerWebsite}
-            <a
-              href={providerWebsite}
-              target="_blank"
-              rel="noopener noreferrer"
-              class="text-xs text-primary hover:underline inline-flex items-center gap-1"
-            >
-              <span class="material-symbols-outlined text-sm">open_in_new</span>
-              {providerWebsiteLabel}
-            </a>
-          {/if}
+      <div class="flex min-w-0 items-center gap-3 sm:gap-4">
+        <div
+          class="flex size-12 shrink-0 items-center justify-center rounded-lg"
+          style="background-color: {providerColor}15;"
+        >
+          <ProviderIcon
+            id={providerId}
+            apiType={selectedNode?.apiType}
+            size="lg"
+            class="border-transparent bg-transparent"
+          />
         </div>
-        <div class="flex items-center gap-2 flex-wrap">
-          <p class="text-text-muted">
-            {providerConnections.length} connection{providerConnections.length === 1 ? '' : 's'}
-          </p>
-          {#if isProviderAllDisabled}
-            <Badge variant="default" size="sm">
-              <span class="flex items-center gap-1">
-                <PauseCircle class="w-3 h-3" />
-                Disabled
-              </span>
-            </Badge>
-          {/if}
+
+        <div class="min-w-0">
+          <div class="flex items-center gap-3 flex-wrap">
+            <h1 class="truncate text-2xl font-semibold tracking-tight sm:text-3xl">
+              {providerName}
+            </h1>
+            {#if providerWebsite}
+              <a
+                href={providerWebsite}
+                target="_blank"
+                rel="noopener noreferrer"
+                class="text-xs text-primary hover:underline inline-flex items-center gap-1"
+              >
+                <span class="material-symbols-outlined text-sm">open_in_new</span>
+                {providerWebsiteLabel}
+              </a>
+            {/if}
+          </div>
+          <div class="flex items-center gap-2 flex-wrap">
+            <p class="text-text-muted">
+              {providerConnections.length} connection{providerConnections.length === 1 ? '' : 's'}
+            </p>
+            {#if isProviderAllDisabled}
+              <Badge variant="default" size="sm">
+                <span class="flex items-center gap-1">
+                  <PauseCircle class="w-3 h-3" />
+                  Disabled
+                </span>
+              </Badge>
+            {/if}
+          </div>
         </div>
       </div>
 

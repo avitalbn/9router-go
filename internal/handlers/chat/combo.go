@@ -552,6 +552,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 	}
 	cw := newCommittedResponseWriter(w)
 	cw.stream = isStream
+	cw.responsesClient = translator.IsResponsesClient(ctx)
 	var lastErr *upstreamError
 	var retry passRetry
 	responseTimeout, timeoutGrace := h.comboTimeoutPolicy(comboName)
@@ -629,8 +630,11 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 
 			candidateCtx := ctx
 			candidateWriter := http.ResponseWriter(cw)
+			// The last candidate keeps the global deadline: the response
+			// timeout only advances a combo, it never makes one fail sooner
+			// than it would without the setting (#744).
 			var timeoutGate *comboResponseTimeout
-			if responseTimeout > 0 {
+			if responseTimeout > 0 && !isLastModel {
 				timeoutGate = newComboResponseTimeout(ctx, cw, responseTimeout)
 				defer timeoutGate.finish()
 				candidateCtx, candidateWriter = timeoutGate.ctx, timeoutGate
@@ -707,7 +711,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				var streamPeeker *internalproxy.StreamContentPeeker
 				if !isStream {
 					fwdCtx = internalproxy.WithZeroContentProbe(candidateCtx, !isLastModel)
-				} else if !isLastModel || timeoutGate != nil {
+				} else if !isLastModel {
 					streamPeeker = internalproxy.NewStreamContentPeeker(candidateWriter)
 					targetWriter = streamPeeker
 				}
@@ -738,11 +742,9 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 
 				if fwdErr != nil {
 					if timeoutGate != nil && timeoutGate.timedOut() && ctx.Err() == nil {
+						log.Warn("combo", "model response timeout, falling back to next model", "provider", modelInfo.Provider, "model", modelInfo.Model)
 						lastErr = comboTimeoutError()
 						break
-					}
-					if cw.IsCommitted() {
-						return
 					}
 					if errors.Is(fwdErr, internalproxy.ErrStreamingZeroContent) {
 						log.Warn("combo", "streaming zero content, falling back to next model", "provider", modelInfo.Provider, "model", modelInfo.Model)
@@ -903,6 +905,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 	}
 	cw := newCommittedResponseWriter(w)
 	cw.stream = isStream
+	cw.responsesClient = translator.IsResponsesClient(ctx)
 	var lastErr *upstreamError
 	var retry passRetry
 	responseTimeout, timeoutGrace := h.comboTimeoutPolicy(comboName)
@@ -966,8 +969,9 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			}
 			candidateCtx := ctx
 			candidateWriter := http.ResponseWriter(cw)
+			// See the chat loop: the last candidate keeps the global deadline.
 			var timeoutGate *comboResponseTimeout
-			if responseTimeout > 0 {
+			if responseTimeout > 0 && !isLastModel {
 				timeoutGate = newComboResponseTimeout(ctx, cw, responseTimeout)
 				defer timeoutGate.finish()
 				candidateCtx, candidateWriter = timeoutGate.ctx, timeoutGate
@@ -1036,7 +1040,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 				var streamPeeker *internalproxy.StreamContentPeeker
 				if !isStream {
 					fwdCtx = internalproxy.WithZeroContentProbe(candidateCtx, !isLastModel)
-				} else if !isLastModel || timeoutGate != nil {
+				} else if !isLastModel {
 					streamPeeker = internalproxy.NewStreamContentPeeker(candidateWriter)
 					targetWriter = streamPeeker
 				}
@@ -1061,11 +1065,9 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 
 				if fwdErr != nil {
 					if timeoutGate != nil && timeoutGate.timedOut() && ctx.Err() == nil {
+						log.Warn("combo", "model response timeout, falling back to next model", "provider", modelInfo.Provider, "model", modelInfo.Model)
 						lastErr = comboTimeoutError()
 						break
-					}
-					if cw.IsCommitted() {
-						return
 					}
 					if errors.Is(fwdErr, internalproxy.ErrStreamingZeroContent) {
 						log.Warn("combo", "streaming zero content, falling back to next model", "provider", modelInfo.Provider, "model", modelInfo.Model)

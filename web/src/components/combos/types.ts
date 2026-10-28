@@ -11,7 +11,10 @@ export interface ComboStrategyInfo {
   confidenceThreshold?: number
   /** System One model that evaluates the route; empty means the free default. */
   routerModel?: string
-  /** Milliseconds from candidate start to first usable response; 0/absent disables. */
+  /**
+   * Milliseconds from candidate start to first usable response; 0/absent
+   * disables. Never applied to the last candidate in the chain.
+   */
   firstTokenTimeoutMs?: number
   /**
    * Milliseconds a model that timed out stays out of the chain. Absent means
@@ -186,7 +189,7 @@ export const MAX_FIRST_TOKEN_TIMEOUT_MS = 9223372036854
 
 /** Tooltip/help text shared by the combo card and the edit modal. */
 export const RESPONSE_TIMEOUT_HELP =
-  "Sequential failover: wait this many seconds for a model's first usable response (connection, headers and first content), then try the next model. Never cuts off a response that is already streaming. Leave empty or 0 to disable. A model that times out is skipped for the grace period (5 minutes by default) before it rejoins the chain."
+  "Sequential failover: wait this many seconds for a model's first usable response (connection, headers and first content), then try the next model. The last model in the chain is never cut short, so this never makes a combo fail sooner. Never cuts off a response that is already streaming. Leave empty or 0 to disable. A model that times out is skipped for the grace period (5 minutes by default) before it rejoins the chain."
 
 /** Backend default grace after a model response timeout (5 minutes). */
 export const DEFAULT_FIRST_TOKEN_GRACE_SECONDS = 300

@@ -156,7 +156,7 @@ func CloakAntigravityRequest(req *GeminiRequest, clientTool string) (*GeminiRequ
 		}
 		seen[decl.Name] = true
 		if decl.Parameters != nil {
-			if b, err := json.Marshal(decl.Parameters); err == nil {
+			if b, err := json.Marshal(decl.Parameters, json.Deterministic(true)); err == nil {
 				cleaned := CleanParametersSchema(b)
 				var cleanedParams any
 				if err := json.Unmarshal(cleaned, &cleanedParams); err == nil {
@@ -684,7 +684,7 @@ func hardenAntigravityRequest(geminiBody []byte) []byte {
 	if !changed {
 		return geminiBody
 	}
-	out, err := json.Marshal(m)
+	out, err := json.Marshal(m, json.Deterministic(true))
 	if err != nil {
 		return geminiBody
 	}
@@ -701,7 +701,7 @@ func StripThoughtSignatures(body []byte) []byte {
 		return body
 	}
 	stripThoughtSignaturesRecursive(v)
-	out, err := json.Marshal(v)
+	out, err := json.Marshal(v, json.Deterministic(true))
 	if err != nil {
 		return body
 	}
@@ -733,7 +733,7 @@ func ReplaceThoughtSignatures(body []byte, replacement string) []byte {
 		return body
 	}
 	replaceThoughtSignaturesRecursive(v, replacement)
-	out, err := json.Marshal(v)
+	out, err := json.Marshal(v, json.Deterministic(true))
 	if err != nil {
 		return body
 	}
@@ -847,7 +847,7 @@ func WrapForAntigravity(geminiBody []byte, projectID, modelName string) ([]byte,
 			cloaked, _ := CloakAntigravityRequest(cleanedReq, "")
 			cleanedReq = cloaked
 		}
-		if cloakedBytes, err := json.Marshal(cleanedReq); err == nil {
+		if cloakedBytes, err := json.Marshal(cleanedReq, json.Deterministic(true)); err == nil {
 			geminiBody = cloakedBytes
 		}
 	}
@@ -863,7 +863,7 @@ func WrapForAntigravity(geminiBody []byte, projectID, modelName string) ([]byte,
 		RequestID: antigravityBuildRequestID(projectID, modelName, "agent", contentCount),
 		Request:   geminiBody,
 	}
-	out, err := json.Marshal(wrapper)
+	out, err := json.Marshal(wrapper, json.Deterministic(true))
 	if err != nil {
 		return nil, fmt.Errorf("marshal antigravity wrapper: %w", err)
 	}

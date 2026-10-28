@@ -117,7 +117,7 @@ func rewriteCodexUpstreamModel(body []byte) []byte {
 		return body
 	}
 	m["model"] = upstream
-	out, err := json.Marshal(m)
+	out, err := marshalStable(m)
 	if err != nil {
 		return body
 	}
@@ -261,7 +261,7 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 			}
 
 			applyCodexModelShape(m, cleanModel)
-			out, err := json.Marshal(m)
+			out, err := marshalStable(m)
 			return out, cleanModel, err
 		}
 	}
@@ -531,7 +531,7 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 	}
 
 	applyCodexModelShape(respReq, cleanModel)
-	reqBody, err := json.Marshal(respReq)
+	reqBody, err := marshalStable(respReq)
 	return reqBody, cleanModel, err
 }
 

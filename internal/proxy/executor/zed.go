@@ -153,7 +153,7 @@ func BuildZedCompletionBody(openAIRequest []byte, wire ZedWireModel, threadID st
 	if threadID = strings.TrimSpace(threadID); threadID != "" {
 		envelope["thread_id"] = threadID
 	}
-	payload, merr := json.Marshal(envelope)
+	payload, merr := marshalStable(envelope)
 	if merr != nil {
 		return nil, fmt.Errorf("zed: marshal completion envelope: %w", merr)
 	}

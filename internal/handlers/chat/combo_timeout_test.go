@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -126,23 +127,62 @@ func TestComboModelResponseTimeoutEndpoints(t *testing.T) {
 	}
 }
 
-func TestComboTimeoutFinalCandidate(t *testing.T) {
-	for _, stream := range []bool{false, true} {
-		rec := httptest.NewRecorder()
-		cw := newCommittedResponseWriter(rec)
-		cw.stream = stream
-		gate := newComboResponseTimeout(context.Background(), cw, time.Hour)
-		gate.expire()
-		if !gate.finish() {
-			t.Fatal("final candidate timeout lost")
-		}
-		var retry passRetry
-		retry.writeError(cw, comboTimeoutError())
-		if rec.Code != http.StatusGatewayTimeout || !strings.Contains(rec.Body.String(), "model response timeout") {
-			t.Fatalf("missing timeout error: %d %s", rec.Code, rec.Body.String())
-		}
-		if stream && !strings.Contains(rec.Body.String(), "data: [DONE]") {
-			t.Fatal("missing SSE terminator")
+// TestComboTimeoutSparesLastCandidate pins #744: the response timeout only
+// advances a combo. The last candidate keeps the global deadline, so a combo
+// whose every member is slower than the timeout still answers instead of
+// failing sooner than it would with the setting off.
+func TestComboTimeoutSparesLastCandidate(t *testing.T) {
+	for _, messages := range []bool{false, true} {
+		for _, stream := range []bool{false, true} {
+			name := "chat"
+			if messages {
+				name = "messages"
+			}
+			if stream {
+				name += "-stream"
+			}
+			t.Run(name, func(t *testing.T) {
+				slow := func(answer string) http.HandlerFunc {
+					return func(w http.ResponseWriter, r *http.Request) {
+						select {
+						case <-r.Context().Done():
+							return
+						case <-time.After(300 * time.Millisecond):
+						}
+						if stream {
+							w.Header().Set("Content-Type", "text/event-stream")
+							_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"" + answer + "\"}}]}\n\ndata: [DONE]\n\n"))
+							return
+						}
+						w.Header().Set("Content-Type", "application/json")
+						_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"` + answer + `"}}]}`))
+					}
+				}
+				first := httptest.NewServer(slow("first member"))
+				defer first.Close()
+				last := httptest.NewServer(slow("last member"))
+				defer last.Close()
+				repo := seedComboWithTwoUpstreams(t, "combo-spare-"+name, first.URL, last.URL, "spare-test")
+				if err := repo.UpdateSettingsRaw(map[string]any{"comboStrategies": map[string]any{"spare-test": map[string]any{"firstTokenTimeoutMs": 100}}}); err != nil {
+					t.Fatal(err)
+				}
+				h := NewChatHandler(repo)
+				body := fmt.Sprintf(`{"model":"spare-test","messages":[{"role":"user","content":"hi"}],"stream":%t}`, stream)
+				req := httptest.NewRequest(http.MethodPost, "/chat/completions", strings.NewReader(body))
+				rec := httptest.NewRecorder()
+				if messages {
+					h.HandleMessages(rec, req)
+				} else {
+					h.HandleChatCompletions(rec, req)
+				}
+				out := rec.Body.String()
+				if rec.Code != http.StatusOK || !strings.Contains(out, "last member") {
+					t.Fatalf("last candidate was cut short: %d %s", rec.Code, out)
+				}
+				if strings.Contains(out, "first member") {
+					t.Fatalf("timed-out candidate leaked output: %s", out)
+				}
+			})
 		}
 	}
 }

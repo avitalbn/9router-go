@@ -136,7 +136,7 @@ func InjectSystemPrompt(body []byte, prompt string) ([]byte, bool) {
 		} else {
 			req["instructions"] = prompt
 		}
-		out, _ := json.Marshal(req)
+		out, _ := json.Marshal(req, json.Deterministic(true))
 		return out, true
 	}
 
@@ -201,14 +201,14 @@ func injectChatSystemPrompt(req map[string]any, arr []any, prompt string) ([]byt
 		clone[i] = msg
 
 		req["messages"] = clone
-		out, _ := json.Marshal(req)
+		out, _ := json.Marshal(req, json.Deterministic(true))
 		return out, true
 	}
 
 	// No system message: insert at position 0
 	newMsg := map[string]any{"role": "system", "content": prompt}
 	req["messages"] = append([]any{newMsg}, clone...)
-	out, _ := json.Marshal(req)
+	out, _ := json.Marshal(req, json.Deterministic(true))
 	return out, true
 }
 
@@ -254,12 +254,12 @@ func injectResponsesSystemPrompt(req map[string]any, arr []any, prompt string) (
 		clone[i] = appendResponsesPrompt(itemMap, prompt)
 
 		req["input"] = clone
-		out, _ := json.Marshal(req)
+		out, _ := json.Marshal(req, json.Deterministic(true))
 		return out, true
 	}
 
 	req["input"] = append([]any{newResponsesSystemItem(prompt)}, clone...)
-	out, _ := json.Marshal(req)
+	out, _ := json.Marshal(req, json.Deterministic(true))
 	return out, true
 }
 
@@ -376,7 +376,7 @@ func InjectSystemPromptClaude(body []byte, prompt string) ([]byte, bool) {
 		return body, false
 	}
 
-	out, err := json.Marshal(req)
+	out, err := json.Marshal(req, json.Deterministic(true))
 	if err != nil {
 		return body, false
 	}

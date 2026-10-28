@@ -139,7 +139,7 @@ func ApplyFingerprintSystemPrompt(body []byte) []byte {
 				}
 			}
 		}
-		if b, err := json.Marshal(req); err == nil {
+		if b, err := json.Marshal(req, json.Deterministic(true)); err == nil {
 			return b
 		}
 		return body
@@ -148,7 +148,7 @@ func ApplyFingerprintSystemPrompt(body []byte) []byte {
 	// 2. Responses API instructions property
 	if inst, ok := req["instructions"].(string); ok {
 		req["instructions"] = WithEnvMarker(inst)
-		if b, err := json.Marshal(req); err == nil {
+		if b, err := json.Marshal(req, json.Deterministic(true)); err == nil {
 			return b
 		}
 		return body
@@ -220,7 +220,7 @@ func ApplyFingerprintSystemPrompt(body []byte) []byte {
 			newMessages = append(newMessages, messages...)
 			req["messages"] = newMessages
 		}
-		if b, err := json.Marshal(req); err == nil {
+		if b, err := json.Marshal(req, json.Deterministic(true)); err == nil {
 			return b
 		}
 	}

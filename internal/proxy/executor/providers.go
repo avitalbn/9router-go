@@ -110,7 +110,7 @@ func applyCodexCompact(cfg *providers.ProviderConfig, body []byte) (*providers.P
 		return cfg, body
 	}
 	delete(envelope, "_compact")
-	out, err := json.Marshal(envelope)
+	out, err := marshalStable(envelope)
 	if err != nil {
 		return cfg, body
 	}
@@ -132,7 +132,7 @@ func ForwardIflow(w http.ResponseWriter, req *Request) error {
 			reqMap["stream_options"] = map[string]any{"include_usage": true}
 		}
 	}
-	reqBody, err := json.Marshal(reqMap)
+	reqBody, err := marshalStable(reqMap)
 	if err != nil {
 		return fmt.Errorf("marshal iflow body: %w", err)
 	}
@@ -179,7 +179,7 @@ func ForwardKimchi(w http.ResponseWriter, req *Request) error {
 
 	CleanKimchiBody(reqBody)
 
-	cleanedBody, err := json.Marshal(reqBody)
+	cleanedBody, err := marshalStable(reqBody)
 	if err != nil {
 		return fmt.Errorf("marshal cleaned body: %w", err)
 	}
@@ -972,7 +972,7 @@ func ensureMessagesFor(body []byte, provider, model string) []byte {
 	delete(reqMap, "store")
 	delete(reqMap, "reasoning_effort")
 
-	updated, err := json.Marshal(reqMap)
+	updated, err := marshalStable(reqMap)
 	if err != nil {
 		return body
 	}

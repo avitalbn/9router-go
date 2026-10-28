@@ -35,7 +35,7 @@ func renameMaxTokensBody(body []byte) []byte {
 		m["max_completion_tokens"] = raw
 	}
 	delete(m, "max_tokens")
-	out, err := json.Marshal(m)
+	out, err := marshalStable(m)
 	if err != nil {
 		return body
 	}

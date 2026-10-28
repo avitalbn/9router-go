@@ -59,7 +59,7 @@ func normalizeNvidiaReasoning(raw []byte) []byte {
 		return raw
 	}
 
-	out, err := json.Marshal(body)
+	out, err := marshalStable(body)
 	if err != nil {
 		return raw
 	}

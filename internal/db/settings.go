@@ -12,7 +12,9 @@ type ComboStrategy struct {
 	Strategy    string `json:"strategy,omitempty"`
 	StickyLimit int    `json:"stickyLimit,omitempty"`
 	JudgeModel  string `json:"judgeModel,omitempty"`
-	// FirstTokenTimeoutMs bounds a combo candidate until its first usable response; zero disables it.
+	// FirstTokenTimeoutMs bounds every combo candidate except the last until
+	// its first usable response; zero disables it. The last candidate keeps
+	// the global deadline, so the setting never makes a combo fail sooner.
 	FirstTokenTimeoutMs int `json:"firstTokenTimeoutMs,omitempty"`
 	// FirstTokenGraceMs is how long a model that timed out is left out of the
 	// combo chain before it is tried again. Nil means DefaultFirstTokenGraceMs;
