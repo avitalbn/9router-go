@@ -57,40 +57,173 @@ func TestProcessCodexEvent_StableToolCallID(t *testing.T) {
 	}
 }
 
-// response.function_call_arguments.done must carry the same id/index as the
-// incremental deltas so the tool name attaches to the right tool call.
-func TestProcessCodexEvent_DoneCarriesToolCallID(t *testing.T) {
-	state := &CodexStreamState{}
-	// First fragment assigns index 0 to call_abc.
-	ProcessCodexEvent(`{"type":"response.function_call_arguments.delta","call_id":"call_abc","delta":"{}","name":"Read"}`, state, "chatcmpl-x", 1)
-	out := ProcessCodexEvent(`{"type":"response.function_call_arguments.done","call_id":"call_abc","name":"Read","arguments":"{\"path\":\"/tmp\"}"}`, state, "chatcmpl-x", 1)
-	if len(out) == 0 {
-		t.Fatal("expected done chunk")
+func TestHandleCodexStream_ParallelToolArguments(t *testing.T) {
+	complete := [][]string{
+		{`{"value":"`, "ha", "ha", "ha", `"}`},
+		{`{"value":"`, "bye", `"}`},
 	}
-	id, idx := parseToolCalls(t, out[0])
-	if id != "call_abc" || idx != 0 {
-		t.Errorf("done chunk: got id=%q idx=%d, want call_abc/0", id, idx)
-	}
-}
-
-func TestProcessCodexEvent_OutputItemDone_NoDuplicateArguments(t *testing.T) {
-	// Scenario 1: delta already streamed arguments -> output_item.done must NOT re-emit arguments
-	state := &CodexStreamState{}
-	deltaOut := ProcessCodexEvent(`{"type":"response.function_call_arguments.delta","call_id":"call_1","delta":"{\"q\":\"*.yaml\"}","name":"search_file"}`, state, "chatcmpl-x", 1)
-	if len(deltaOut) == 0 {
-		t.Fatal("expected delta chunk")
-	}
-
-	doneOut := ProcessCodexEvent(`{"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_1","arguments":"{\"q\":\"*.yaml\"}"}}`, state, "chatcmpl-x", 1)
-	if len(doneOut) != 0 {
-		t.Fatalf("expected output_item.done to be suppressed after delta, but got %d chunk(s): %v", len(doneOut), doneOut)
-	}
-
-	// Scenario 2: no delta was sent (upstream only sent output_item.done) -> MUST emit arguments
-	state2 := &CodexStreamState{}
-	doneOut2 := ProcessCodexEvent(`{"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_2","arguments":"{\"q\":\"*.yaml\"}"}}`, state2, "chatcmpl-x", 1)
-	if len(doneOut2) == 0 {
-		t.Fatal("expected output_item.done to emit arguments when no delta was streamed")
+	for _, tt := range []struct {
+		name          string
+		added         bool
+		deltas        [][]string
+		argumentsDone bool
+		outputDone    bool
+	}{
+		{name: "done-only snapshots", added: true, argumentsDone: true, outputDone: true},
+		{name: "deltas and both snapshots", added: true, deltas: complete, argumentsDone: true, outputDone: true},
+		{name: "deltas and item snapshot", added: true, deltas: complete, outputDone: true},
+		{name: "partial deltas and both snapshots", added: true, deltas: [][]string{{`{"value":"ha`}, {`{"value":`}}, argumentsDone: true, outputDone: true},
+		{name: "partial deltas and item snapshot", added: true, deltas: [][]string{{`{"value":"ha`}, {`{"value":`}}, outputDone: true},
+		{name: "arguments snapshot only", added: true, argumentsDone: true},
+		{name: "item snapshot without added", outputDone: true},
+		{name: "call-id deltas without added", deltas: complete, argumentsDone: true, outputDone: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			callIDs := []string{"call_alpha", "call_beta"}
+			itemIDs := []string{"fc_alpha", "fc_beta"}
+			names := []string{"echo_alpha", "echo_beta"}
+			fullArgs := []string{`{"value":"hahaha"}`, `{"value":"bye"}`}
+			values := []string{"hahaha", "bye"}
+			var upstream strings.Builder
+			emit := func(event map[string]any) {
+				t.Helper()
+				raw, err := json.Marshal(event)
+				if err != nil {
+					t.Fatal(err)
+				}
+				upstream.WriteString("data: ")
+				upstream.Write(raw)
+				upstream.WriteString("\n\n")
+			}
+			// Start both calls before delivering arguments. Argument events have
+			// item_id but no call_id, matching the native Responses stream.
+			if tt.added {
+				for i := range callIDs {
+					emit(map[string]any{
+						"type": "response.output_item.added", "output_index": i,
+						"item": map[string]any{"type": "function_call", "id": itemIDs[i], "call_id": callIDs[i], "name": names[i], "arguments": ""},
+					})
+				}
+			}
+			if tt.deltas != nil {
+				for n := range max(len(tt.deltas[0]), len(tt.deltas[1])) {
+					for i := range callIDs {
+						if n < len(tt.deltas[i]) {
+							event := map[string]any{"type": "response.function_call_arguments.delta", "delta": tt.deltas[i][n]}
+							if tt.added {
+								event["item_id"] = itemIDs[i]
+							} else {
+								event["call_id"] = callIDs[i]
+								event["name"] = names[i]
+							}
+							emit(event)
+						}
+					}
+				}
+			}
+			if tt.argumentsDone {
+				for i := range callIDs {
+					event := map[string]any{"type": "response.function_call_arguments.done", "arguments": fullArgs[i]}
+					if tt.added {
+						event["item_id"] = itemIDs[i]
+					} else {
+						event["call_id"] = callIDs[i]
+						event["name"] = names[i]
+					}
+					emit(event)
+				}
+			}
+			if tt.outputDone {
+				// Finalize in reverse order, then repeat the snapshots. Neither
+				// order nor a second snapshot may merge calls or repeat JSON.
+				for range 2 {
+					for _, i := range []int{1, 0} {
+						emit(map[string]any{
+							"type": "response.output_item.done", "output_index": i,
+							"item": map[string]any{"type": "function_call", "id": itemIDs[i], "call_id": callIDs[i], "name": names[i], "arguments": fullArgs[i]},
+						})
+					}
+				}
+			}
+			emit(map[string]any{"type": "response.completed"})
+			rec := httptest.NewRecorder()
+			if err := handleCodexStream(rec, &Request{IsStream: true}, strings.NewReader(upstream.String())); err != nil {
+				t.Fatal(err)
+			}
+			type call struct{ id, name, arguments string }
+			calls := map[int]*call{}
+			finish := ""
+			for _, line := range strings.Split(rec.Body.String(), "\n") {
+				if !strings.HasPrefix(line, "data: {") {
+					continue
+				}
+				var chunk struct {
+					Choices []struct {
+						FinishReason string `json:"finish_reason"`
+						Delta        struct {
+							ToolCalls []struct {
+								Index    int    `json:"index"`
+								ID       string `json:"id"`
+								Function struct {
+									Name      string `json:"name"`
+									Arguments string `json:"arguments"`
+								} `json:"function"`
+							} `json:"tool_calls"`
+						} `json:"delta"`
+					} `json:"choices"`
+				}
+				if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &chunk); err != nil {
+					t.Fatal(err)
+				}
+				for _, choice := range chunk.Choices {
+					if choice.FinishReason != "" {
+						finish = choice.FinishReason
+					}
+					for _, tc := range choice.Delta.ToolCalls {
+						if calls[tc.Index] == nil {
+							calls[tc.Index] = &call{}
+						}
+						c := calls[tc.Index]
+						if tc.ID != "" {
+							if c.id != "" && c.id != tc.ID {
+								t.Fatalf("call %d changed id from %q to %q", tc.Index, c.id, tc.ID)
+							}
+							c.id = tc.ID
+						}
+						c.name += tc.Function.Name
+						c.arguments += tc.Function.Arguments
+					}
+				}
+			}
+			if finish != "tool_calls" || len(calls) != len(callIDs) {
+				t.Fatalf("finish=%q calls=%v, want two tool calls", finish, calls)
+			}
+			seen := map[string]bool{}
+			for _, c := range calls {
+				i := -1
+				for n, id := range callIDs {
+					if c.id == id {
+						i = n
+					}
+				}
+				if i < 0 {
+					t.Fatalf("unexpected tool call id %q", c.id)
+				}
+				if seen[c.id] {
+					t.Fatalf("tool call %q split across indices", c.id)
+				}
+				seen[c.id] = true
+				var args struct {
+					Value string `json:"value"`
+				}
+				if err := json.Unmarshal([]byte(c.arguments), &args); err != nil {
+					t.Fatalf("%s invalid arguments %q: %v", c.id, c.arguments, err)
+				}
+				if c.name != names[i] || args.Value != values[i] {
+					t.Errorf("%s name=%q value=%q, want %q %q", c.id, c.name, args.Value, names[i], values[i])
+				}
+			}
+		})
 	}
 }
 
