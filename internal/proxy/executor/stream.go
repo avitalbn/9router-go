@@ -21,6 +21,7 @@ import (
 
 type CodexStreamState struct {
 	CurrentEvent      string
+	model             string
 	OutputLength      int
 	ToolCallCount     int
 	Completed         bool   // response.completed seen — finish chunk already emitted
@@ -78,6 +79,7 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 			"id":      responseID,
 			"object":  "chat.completion.chunk",
 			"created": created,
+			"model":   state.model,
 			"choices": []map[string]any{{
 				"index": 0,
 				"delta": map[string]any{"content": delta},
@@ -99,6 +101,7 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 			"id":      responseID,
 			"object":  "chat.completion.chunk",
 			"created": created,
+			"model":   state.model,
 			"choices": []map[string]any{{
 				"index": 0,
 				"delta": map[string]any{"reasoning_content": delta},
@@ -133,6 +136,7 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 				"id":      responseID,
 				"object":  "chat.completion.chunk",
 				"created": created,
+				"model":   state.model,
 				"choices": []map[string]any{{
 					"index": 0,
 					"delta": map[string]any{
@@ -200,6 +204,7 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 			"id":      responseID,
 			"object":  "chat.completion.chunk",
 			"created": created,
+			"model":   state.model,
 			"choices": []map[string]any{{
 				"index": 0,
 				"delta": map[string]any{
@@ -265,6 +270,7 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 			"id":      responseID,
 			"object":  "chat.completion.chunk",
 			"created": created,
+			"model":   state.model,
 			"choices": []map[string]any{{
 				"index": 0,
 				"delta": map[string]any{
@@ -293,6 +299,7 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 			"id":      responseID,
 			"object":  "chat.completion.chunk",
 			"created": created,
+			"model":   state.model,
 			"choices": []map[string]any{{
 				"index":         0,
 				"delta":         map[string]any{},
@@ -387,7 +394,7 @@ func toolCallIndex(state *CodexStreamState, itemID, callID string) (string, int)
 func handleCodexStream(w http.ResponseWriter, req *Request, upstream io.Reader) error {
 	responseID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 	created := time.Now().Unix()
-	state := &CodexStreamState{}
+	state := &CodexStreamState{model: req.ModelName}
 
 	// A Responses client and a Responses endpoint already agree: relaying the
 	// body untouched keeps the fields the native API owns (previous_response_id,

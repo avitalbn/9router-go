@@ -56,6 +56,14 @@ func UpstreamSpeaksResponses(provider, model string, cfg *providers.ProviderConf
 		// family fallback the executor applies.
 		formats, declared := providers.GetModelFormats(provider, cleanResponsesModel(model))
 		return declared && formats.TargetFormat == providers.FormatOpenAIResponses
+	case "github", "gh":
+		// GitHub Copilot GPT models that only work on /responses are tracked in
+		// the runtime cache githubResponsesModels (populated by ForwardGithub on
+		// first discovery and pre-warmed for confirmed Responses-only models at
+		// init). A /v1/responses client for a cached model is relayed untouched;
+		// a Chat client goes through the standard conversion in forwardGithubResponses.
+		_, known := githubResponsesModels.Load(model)
+		return known
 	case "muse":
 		// Meta's Model API serves both lanes on one key, and every Muse Spark
 		// model pins the Responses one, so a /v1/responses client is relayed

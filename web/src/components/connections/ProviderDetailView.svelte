@@ -2873,7 +2873,7 @@
   let canListLiveModels = $derived(
     providerId.startsWith('openai-compatible-') ||
       isCompatibleNode ||
-      ['antigravity', 'gemini-cli', 'cline', 'clinepass', 'qoder', 'qoder-cn', 'zed'].includes(providerId) ||
+      ['antigravity', 'gemini-cli', 'cline', 'clinepass', 'qoder', 'qoder-cn', 'zed', 'github'].includes(providerId) ||
       ModelsListURLs.has(providerId)
   )
 

@@ -930,6 +930,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 			Provider:       provider,
 			APIKey:         apiKey,
 			Body:           pipedBody,
+			ModelName:      model,
 			IsStream:       isStream,
 			ClaudeClient:   endpoint == "/v1/v1/messages" || endpoint == "/v1/messages",
 			TranslateResp:  translateResponse,

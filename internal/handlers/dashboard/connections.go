@@ -6,6 +6,7 @@ import (
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/updater"
 	"context"
+	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"fmt"
 	"io"
@@ -1219,6 +1220,151 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 			"provider":     conn.Provider,
 			"connectionId": conn.ID,
 			"models":       zedModels,
+		})
+		return
+	}
+
+	// GitHub Copilot publishes an account-specific model catalog at
+	// {endpoints.api}/models. The endpoint URL is discovered by exchanging
+	// the stored OAuth token for a short-lived Copilot inference token via
+	// copilot_internal/v2/token; the exchange response carries endpoints.api
+	// which differs for personal vs business/enterprise accounts
+	// (api.githubcopilot.com vs api.business.githubcopilot.com). If the
+	// exchange fails (e.g. an API-key connection whose token is not an OAuth
+	// user token), we fall back to the stored credential against the standard
+	// personal endpoint, which also accepts direct API keys. The response
+	// shape is {data:[{id,name,model_picker_enabled,capabilities,…}]};
+	// model_picker_enabled filters out internal/utility models that are not
+	// part of the public picker. Capabilities limits and supports are
+	// preserved so consumers can read context windows and feature flags.
+	if conn.Provider == "github" || conn.Provider == "gh" {
+		oauthToken := connData.AccessToken
+		if oauthToken == "" {
+			oauthToken = connData.APIKey
+		}
+		if oauthToken == "" {
+			handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no valid token found")
+			return
+		}
+		// Discover the Copilot API endpoint and mint a fresh inference token.
+		// The exchange headers mirror githubPoll in internal/handlers/oauth/device.go.
+		apiBase := "https://api.githubcopilot.com"
+		authToken := oauthToken
+		exchangeHeaders := map[string]string{
+			"Authorization":        "Bearer " + oauthToken,
+			"X-GitHub-Api-Version": "2022-11-28",
+			"User-Agent":           "GitHubCopilotChat/0.26.7",
+			"Accept":               "application/json",
+		}
+		tokStatus, tokBody, tokErr := validateProbeDo(r.Context(), http.MethodGet, "https://api.github.com/copilot_internal/v2/token", exchangeHeaders, nil)
+		if tokErr == nil && tokStatus == http.StatusOK {
+			var tokResp struct {
+				Token     string `json:"token"`
+				Endpoints struct {
+					API string `json:"api"`
+				} `json:"endpoints"`
+			}
+			if json.Unmarshal(tokBody, &tokResp) == nil {
+				if tokResp.Token != "" {
+					authToken = tokResp.Token
+				}
+				if tokResp.Endpoints.API != "" {
+					apiBase = strings.TrimSuffix(tokResp.Endpoints.API, "/")
+				}
+			}
+		}
+		// Build request headers: GitHub Copilot static headers plus the auth token.
+		// Content-Type is omitted — this is a GET request with no body.
+		ghHeaders := map[string]string{"Authorization": "Bearer " + authToken}
+		for k, v := range providers.KnownProviders["github"].StaticHeaders {
+			if k != "Content-Type" {
+				ghHeaders[k] = v
+			}
+		}
+		status, body, err := validateProbeDo(r.Context(), http.MethodGet, apiBase+"/models", ghHeaders, nil)
+		if err != nil {
+			statusCode, _, errMsg := ClassifyUpstreamNetworkError(err)
+			handlerutil.WriteJSONError(w, statusCode, "failed to fetch GitHub Copilot models: "+errMsg)
+			return
+		}
+		if status != http.StatusOK {
+			handlerutil.WriteJSONError(w, status, fmt.Sprintf("failed to fetch models: %d", status))
+			return
+		}
+		var ghResp struct {
+			Data []struct {
+				ID                 string `json:"id"`
+				Name               string `json:"name"`
+				ModelPickerEnabled bool   `json:"model_picker_enabled"`
+				Capabilities       struct {
+					Type   string `json:"type"`
+					Limits struct {
+						MaxContextWindowTokens int `json:"max_context_window_tokens"`
+						MaxPromptTokens        int `json:"max_prompt_tokens"`
+						MaxOutputTokens        int `json:"max_output_tokens"`
+					} `json:"limits"`
+					Supports struct {
+						Vision          bool           `json:"vision"`
+						ToolCalls       bool           `json:"tool_calls"`
+						ReasoningEffort jsontext.Value `json:"reasoning_effort"`
+					} `json:"supports"`
+				} `json:"capabilities"`
+				SupportedEndpoints []string `json:"supported_endpoints"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(body, &ghResp); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, "invalid JSON from GitHub Copilot models")
+			return
+		}
+		var modelsList []any
+		for _, m := range ghResp.Data {
+			if !m.ModelPickerEnabled {
+				continue
+			}
+			displayName := m.Name
+			if displayName == "" {
+				displayName = m.ID
+			}
+			caps := map[string]any{
+				"type":      m.Capabilities.Type,
+				"vision":    m.Capabilities.Supports.Vision,
+				"reasoning": m.Capabilities.Supports.ReasoningEffort.Kind() == '[' || m.Capabilities.Supports.ReasoningEffort.Kind() == jsontext.KindTrue,
+				"supports": map[string]any{
+					"vision":           m.Capabilities.Supports.Vision,
+					"tool_calls":       m.Capabilities.Supports.ToolCalls,
+					"reasoning_effort": m.Capabilities.Supports.ReasoningEffort,
+				},
+			}
+			if m.Capabilities.Limits.MaxContextWindowTokens > 0 {
+				caps["limits"] = map[string]any{
+					"max_context_window_tokens": m.Capabilities.Limits.MaxContextWindowTokens,
+					"max_prompt_tokens":         m.Capabilities.Limits.MaxPromptTokens,
+					"max_output_tokens":         m.Capabilities.Limits.MaxOutputTokens,
+				}
+			}
+			entry := map[string]any{
+				"id":           m.ID,
+				"name":         displayName,
+				"capabilities": caps,
+			}
+			if m.Capabilities.Limits.MaxContextWindowTokens > 0 {
+				entry["context_length"] = m.Capabilities.Limits.MaxContextWindowTokens
+			}
+			if m.Capabilities.Limits.MaxOutputTokens > 0 {
+				entry["max_completion_tokens"] = m.Capabilities.Limits.MaxOutputTokens
+			}
+			if len(m.SupportedEndpoints) > 0 {
+				entry["supported_endpoints"] = m.SupportedEndpoints
+			}
+			modelsList = append(modelsList, entry)
+		}
+		if modelsList == nil {
+			modelsList = []any{}
+		}
+		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+			"provider":     conn.Provider,
+			"connectionId": conn.ID,
+			"models":       modelsList,
 		})
 		return
 	}
