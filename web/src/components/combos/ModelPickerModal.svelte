@@ -14,6 +14,7 @@
     resolveModelPickerGroups,
   } from './pickerData'
   import { EMPTY_PICKER_EXTRAS, loadPickerExtras, type ResolvedPickerExtras } from './pickerExtras'
+  import { providerHasCredentials } from './routerCredentials'
   import { emailPrivacy, formatEmailLabel } from '../../lib/privacy'
   import { parseSearchQuery } from '../../lib/modelSearchFilter'
 
@@ -221,6 +222,15 @@
               <span class="text-[10px] text-text-muted">
                 ({group.models.length})
               </span>
+              {#if target === 'router' && !providerHasCredentials(group.id, connections)}
+                <span
+                  class="inline-flex items-center gap-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400"
+                  title="No credentials for {group.id}: System One routing is skipped and the combo uses its saved order. Connect {group.id} or pick another router model."
+                >
+                  <span class="material-symbols-outlined text-[13px]">warning</span>
+                  No active connection
+                </span>
+              {/if}
             </div>
             <div class="flex flex-wrap gap-1.5">
               {#each group.models as model (model.value)}

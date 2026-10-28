@@ -17,6 +17,7 @@
     type CapacityAdapterState,
     type ComboStrategyInfo
   } from './types'
+  import { routerCredentialWarning } from './routerCredentials'
   import SmartPolicyModal from './SmartPolicyModal.svelte'
   import Button from '../../lib/ui/Button.svelte'
   import Card from '../../lib/ui/Card.svelte'
@@ -593,6 +594,7 @@
             {combo}
             strategyInfo={comboStrategies[combo.name]}
             globalStrategy={globalComboStrategy}
+            routerWarning={routerCredentialWarning(comboStrategies[combo.name]?.routerModel, connections, providerNodes)}
             {copiedId}
             onSetStrategy={handleSetStrategy}
             onSetResponseTimeout={handleSetResponseTimeout}

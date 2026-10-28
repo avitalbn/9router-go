@@ -36,6 +36,8 @@
     combo: Combo
     strategyInfo?: ComboStrategyInfo
     globalStrategy?: string | null
+    /** Set when the router model's provider has no credentials (see routerCredentials.ts). */
+    routerWarning?: string | null
     copiedId?: string | null
     onSetStrategy: (combo: Combo, strategy: string) => void
     onSetResponseTimeout: (combo: Combo, timeoutMs: number) => void
@@ -55,6 +57,7 @@
     combo,
     strategyInfo = {},
     globalStrategy = null,
+    routerWarning = null,
     copiedId = null,
     onSetStrategy,
     onSetResponseTimeout,
@@ -199,6 +202,17 @@
               <span class="material-symbols-outlined text-[13px]">psychology</span>
               <span class="truncate">{routerModel || 'Auto — oc/jev-1.13-free'}</span>
             </button>
+            {#if routerWarning}
+              <span
+                class="inline-flex items-center gap-0.5 text-[11px] font-medium text-amber-600 dark:text-amber-400"
+                title={routerWarning}
+                role="img"
+                aria-label={routerWarning}
+              >
+                <span class="material-symbols-outlined text-[14px]">warning</span>
+                No credentials
+              </span>
+            {/if}
             <button
               type="button"
               onclick={() => onOpenPolicyModal(combo)}
