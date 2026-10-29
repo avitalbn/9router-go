@@ -76,9 +76,29 @@ func ForwardCodex(w http.ResponseWriter, req *Request) error {
 	if err != nil {
 		return fmt.Errorf("transform body: %w", err)
 	}
-	// The ChatGPT Codex backend rejects a max_output_tokens it did not ask
-	// for; every chat-completions client sends one, so drop it here (#48).
-	transformedBody = stripCodexUnsupportedTokenParams(transformedBody)
+
+	// Resolve conversation-stable session_id for Codex prompt caching
+	sessionID := req.SessionID
+	if sessionID == "" {
+		if req.ConnectionID != "" {
+			sessionID = req.ConnectionID
+		} else if req.ConnData != nil {
+			if cid, ok := req.ConnData["connectionId"].(string); ok && cid != "" {
+				sessionID = cid
+			}
+		}
+	}
+	if sessionID == "" {
+		sessionID = "default"
+	}
+
+	// Inject prompt_cache_key for stable Codex prompt caching if not already set
+	transformedBody = injectCodexPromptCacheKey(transformedBody, sessionID)
+
+	responsesLite := codexResponsesLiteBody(transformedBody)
+
+	// The ChatGPT Codex backend rejects unsupported parameters and requires the allowlist
+	transformedBody = stripCodexUnsupportedTokenParams(transformedBody, responsesLite)
 	// Only now that the "(level)" suffix is gone can the catalog id be mapped
 	// to its wire id, so this has to follow the transform rather than precede it.
 	transformedBody = rewriteCodexUpstreamModel(transformedBody)
@@ -87,12 +107,31 @@ func ForwardCodex(w http.ResponseWriter, req *Request) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	resp, err := proxy.ForwardCodex(ctx, req.Client, cfg, req.APIKey, transformedBody, req.IsStream, req.ConnData, codexResponsesLiteBody(transformedBody))
+	resp, err := proxy.ForwardCodex(ctx, req.Client, cfg, req.APIKey, transformedBody, req.IsStream, req.ConnData, responsesLite, sessionID)
 	if err != nil {
 		return fmt.Errorf("ForwardCodex: %w", err)
 	}
 	defer resp.Body.Close()
 	return handleCodexStream(w, req, resp.Body)
+}
+
+func injectCodexPromptCacheKey(body []byte, sessionID string) []byte {
+	if sessionID == "" || sessionID == "default" {
+		return body
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return body
+	}
+	if pck, ok := envelope["prompt_cache_key"].(string); ok && pck != "" {
+		return body
+	}
+	envelope["prompt_cache_key"] = sessionID
+	out, err := marshalStable(envelope)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 // applyCodexCompact routes a compaction request to the codex /compact endpoint
@@ -620,21 +659,12 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 		req.Ctx = translator.WithToolNameMap(req.Ctx, toolNameMap)
 		w = NewToolNameRestoringWriter(w, toolNameMap)
 
+		// The lane URL is what the relay forwards to, so it is built the same way
+		// for a relayed connection as for a direct one.
 		cfg := *req.Config
-		isRelay := cfg.StaticHeaders != nil && cfg.StaticHeaders["x-relay-target"] != ""
-		if isRelay {
-			// Relay mode: BaseURL is the relay host (e.g. vercel-relay.vercel.app).
-			// Target endpoint must be set in x-relay-path, NOT by appending /responses to BaseURL.
-			cfg.StaticHeaders = make(map[string]string, len(req.Config.StaticHeaders))
-			for k, v := range req.Config.StaticHeaders {
-				cfg.StaticHeaders[k] = v
-			}
-			cfg.StaticHeaders["x-relay-path"] = "/inference/openai/v1/responses"
-		} else {
-			baseURL := strings.TrimRight(cfg.BaseURL, "/")
-			baseURL = strings.TrimSuffix(baseURL, "/chat/completions")
-			cfg.BaseURL = opencodeInferenceBase(baseURL) + "/responses"
-		}
+		baseURL := strings.TrimRight(cfg.BaseURL, "/")
+		baseURL = strings.TrimSuffix(baseURL, "/chat/completions")
+		cfg.BaseURL = opencodeInferenceBase(baseURL) + "/responses"
 		baseHeaders := cfg.StaticHeaders
 		hint := opencodeSessionHint(req, true)
 		cfg.StaticHeaders = proxy.BuildOpenCodeHeaders(cfg.StaticHeaders, hint, req.IsStream)
@@ -711,14 +741,9 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 		}
 	}
 
+	// One lane URL for both egress paths: a relay forwards to whatever this names.
 	cfg := *req.Config
-	if isRelayConfig(&cfg) {
-		cfg.StaticHeaders = copyHeaders(cfg.StaticHeaders)
-		cfg.StaticHeaders["x-relay-path"] = "/inference/openai/v1/chat/completions"
-		cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/") + "/chat/completions"
-	} else {
-		cfg.BaseURL = opencodeChatURL(cfg.BaseURL)
-	}
+	cfg.BaseURL = opencodeChatURL(cfg.BaseURL)
 	baseHeaders := cfg.StaticHeaders
 	hint := opencodeSessionHint(req, true)
 	cfg.StaticHeaders = proxy.BuildOpenCodeHeaders(cfg.StaticHeaders, hint, true)
@@ -1621,14 +1646,9 @@ func forwardOpencodeGoFree(w http.ResponseWriter, req *Request, cleanModel strin
 		}
 	}
 
+	// One lane URL for both egress paths: a relay forwards to whatever this names.
 	cfg := *req.Config
-	if isRelayConfig(&cfg) {
-		cfg.StaticHeaders = copyHeaders(cfg.StaticHeaders)
-		cfg.StaticHeaders["x-relay-path"] = "/inference/openai/v1/chat/completions"
-		cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/") + "/chat/completions"
-	} else {
-		cfg.BaseURL = opencodeGoInferenceBase(cfg.BaseURL) + "/chat/completions"
-	}
+	cfg.BaseURL = opencodeGoInferenceBase(cfg.BaseURL) + "/chat/completions"
 	baseHeaders := cfg.StaticHeaders
 	hint := opencodeSessionHint(req, true)
 	cfg.StaticHeaders = proxy.BuildOpenCodeHeaders(cfg.StaticHeaders, hint, true)
@@ -1764,16 +1784,10 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 			return fmt.Errorf("normalize opencode-go muse-spark body: %w", err)
 		}
 
+		// The lane URL is what a relay forwards to, so it is built without a relay
+		// branch.
 		cfg := *req.Config
-		isRelay := cfg.StaticHeaders != nil && cfg.StaticHeaders["x-relay-target"] != ""
-		if isRelay {
-			headersCopy := make(map[string]string, len(cfg.StaticHeaders))
-			for k, v := range cfg.StaticHeaders {
-				headersCopy[k] = v
-			}
-			headersCopy["x-relay-path"] = "/zen/go/v1/responses"
-			cfg.StaticHeaders = headersCopy
-		} else if !strings.HasSuffix(cfg.BaseURL, "/responses") {
+		if !strings.HasSuffix(cfg.BaseURL, "/responses") {
 			baseURL := strings.TrimRight(cfg.BaseURL, "/")
 			if strings.HasSuffix(baseURL, "/chat/completions") {
 				baseURL = strings.TrimSuffix(baseURL, "/chat/completions")
