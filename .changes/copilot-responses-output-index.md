@@ -1,0 +1,7 @@
+### fix(copilot): preserve streamed tool identity across changing Responses item IDs
+
+- Correlate function/custom-tool events by response-local `output_index` before falling back to `item_id`. GitHub Copilot can re-encode opaque item IDs between argument events; those fragments now retain the opening call's canonical ID, name, index, and argument buffer rather than creating nameless calls.
+- Keep item-ID aliases for events that omit `output_index`, and distinguish missing output indices from index zero. An unseen indexed call no longer inherits whichever parallel call happened to open most recently.
+- Extend streaming regression coverage with interleaved parallel calls using rotating item IDs or output-index-only argument events, including noncontiguous output indices and repeated final snapshots. All three new scenarios fail before the fix and pass afterward.
+- Verified executor, chat-handler, and translator package tests, plus an isolated HTTP roundtrip through the production GitHub executor and Hermes's installed streaming accumulator/finalizer. Two parallel calls retained their exact arguments and IDs, accepted tool results, and completed with `stop` rather than a synthetic `length` failure. No Hermes source patch is required for this bridge defect.
+- After deployment, the live Hermes `agent-general` route also completed a streaming tool/result roundtrip through its existing fallback chain (`reflection/beam-free`). Direct live GitHub validation remains quota-limited; rotating-ID coverage uses the isolated upstream fixture.

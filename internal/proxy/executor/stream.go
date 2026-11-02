@@ -20,18 +20,19 @@ import (
 // ---- Codex Responses API SSE → Chat SSE ----
 
 type CodexStreamState struct {
-	CurrentEvent      string
-	model             string
-	OutputLength      int
-	ToolCallCount     int
-	Completed         bool   // response.completed seen — finish chunk already emitted
-	UpstreamErr       []byte // raw upstream {"type":"error",...} event, if any
-	CurrentToolCallID string
-	ToolCallIdx       map[string]int
-	ToolCallNames     map[string]string
-	ToolCallArgs      map[string]string
-	ItemIDToCallID    map[string]string
-	Usage             *translator.OpenAIUsage
+	CurrentEvent        string
+	model               string
+	OutputLength        int
+	ToolCallCount       int
+	Completed           bool   // response.completed seen — finish chunk already emitted
+	UpstreamErr         []byte // raw upstream {"type":"error",...} event, if any
+	CurrentToolCallID   string
+	ToolCallIdx         map[string]int
+	ToolCallNames       map[string]string
+	ToolCallArgs        map[string]string
+	ItemIDToCallID      map[string]string
+	OutputIndexToCallID map[int]string
+	Usage               *translator.OpenAIUsage
 }
 
 func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, created int64) []string {
@@ -125,7 +126,7 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 			if itemID == "" {
 				itemID, _ = item["id"].(string)
 			}
-			callID, idx := toolCallIndex(state, itemID, callID)
+			callID, idx := toolCallIndex(state, event, itemID, callID)
 			if state.ToolCallNames == nil {
 				state.ToolCallNames = make(map[string]string)
 			}
@@ -167,7 +168,7 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 		itemID, _ := event["item_id"].(string)
 		callID, _ := event["call_id"].(string)
 		name, _ := event["name"].(string)
-		callID, idx := toolCallIndex(state, itemID, callID)
+		callID, idx := toolCallIndex(state, event, itemID, callID)
 
 		if state.ToolCallArgs == nil {
 			state.ToolCallArgs = make(map[string]string)
@@ -236,7 +237,7 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 				itemID, _ = item["id"].(string)
 			}
 		}
-		callID, idx := toolCallIndex(state, itemID, callID)
+		callID, idx := toolCallIndex(state, event, itemID, callID)
 		if eventType == "response.output_item.done" && state.CurrentToolCallID == callID {
 			state.CurrentToolCallID = ""
 		}
@@ -358,16 +359,25 @@ func codexUsageMap(resp map[string]any) map[string]any {
 	return chunkUsage
 }
 
-// toolCallIndex resolves Responses item ids to the canonical call id before
-// looking up any per-call state. Arguments events often omit call_id.
-func toolCallIndex(state *CodexStreamState, itemID, callID string) (string, int) {
-	if id := state.ItemIDToCallID[itemID]; id != "" {
-		callID = id
+// toolCallIndex keeps the first call id stable for a Responses output slot.
+// Copilot may re-encode item_id on each event; output_index still identifies the
+// same call. Item aliases also support streams that omit output_index.
+func toolCallIndex(state *CodexStreamState, event map[string]any, itemID, callID string) (string, int) {
+	outputIndex, hasOutputIndex := event["output_index"].(float64)
+	var canonicalID string
+	if hasOutputIndex {
+		canonicalID = state.OutputIndexToCallID[int(outputIndex)]
+	}
+	if canonicalID == "" {
+		canonicalID = state.ItemIDToCallID[itemID]
+	}
+	if canonicalID != "" {
+		callID = canonicalID
 	}
 	if callID == "" {
 		callID = itemID
 	}
-	if callID == "" {
+	if callID == "" && !hasOutputIndex {
 		callID = state.CurrentToolCallID
 	}
 	if callID == "" {
@@ -375,6 +385,12 @@ func toolCallIndex(state *CodexStreamState, itemID, callID string) (string, int)
 	}
 	if state.ToolCallIdx == nil {
 		state.ToolCallIdx = make(map[string]int)
+	}
+	if hasOutputIndex {
+		if state.OutputIndexToCallID == nil {
+			state.OutputIndexToCallID = make(map[int]string)
+		}
+		state.OutputIndexToCallID[int(outputIndex)] = callID
 	}
 	if itemID != "" {
 		if state.ItemIDToCallID == nil {

@@ -3,6 +3,7 @@ package executor
 import (
 	json "encoding/json/v2"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -63,11 +64,13 @@ func TestHandleCodexStream_ParallelToolArguments(t *testing.T) {
 		{`{"value":"`, "bye", `"}`},
 	}
 	for _, tt := range []struct {
-		name          string
-		added         bool
-		deltas        [][]string
-		argumentsDone bool
-		outputDone    bool
+		name            string
+		added           bool
+		deltas          [][]string
+		argumentsDone   bool
+		outputDone      bool
+		rotatingItemIDs bool
+		indexOnly       bool
 	}{
 		{name: "done-only snapshots", added: true, argumentsDone: true, outputDone: true},
 		{name: "deltas and both snapshots", added: true, deltas: complete, argumentsDone: true, outputDone: true},
@@ -77,6 +80,9 @@ func TestHandleCodexStream_ParallelToolArguments(t *testing.T) {
 		{name: "arguments snapshot only", added: true, argumentsDone: true},
 		{name: "item snapshot without added", outputDone: true},
 		{name: "call-id deltas without added", deltas: complete, argumentsDone: true, outputDone: true},
+		{name: "rotating item ids with interleaved deltas", added: true, deltas: complete, rotatingItemIDs: true},
+		{name: "rotating item ids and final snapshots", added: true, deltas: complete, argumentsDone: true, outputDone: true, rotatingItemIDs: true},
+		{name: "output-index-only interleaved deltas", added: true, deltas: complete, argumentsDone: true, outputDone: true, indexOnly: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			callIDs := []string{"call_alpha", "call_beta"}
@@ -100,7 +106,7 @@ func TestHandleCodexStream_ParallelToolArguments(t *testing.T) {
 			if tt.added {
 				for i := range callIDs {
 					emit(map[string]any{
-						"type": "response.output_item.added", "output_index": i,
+						"type": "response.output_item.added", "output_index": i * 2,
 						"item": map[string]any{"type": "function_call", "id": itemIDs[i], "call_id": callIDs[i], "name": names[i], "arguments": ""},
 					})
 				}
@@ -112,6 +118,14 @@ func TestHandleCodexStream_ParallelToolArguments(t *testing.T) {
 							event := map[string]any{"type": "response.function_call_arguments.delta", "delta": tt.deltas[i][n]}
 							if tt.added {
 								event["item_id"] = itemIDs[i]
+								if tt.rotatingItemIDs || tt.indexOnly {
+									event["output_index"] = i * 2
+									if tt.indexOnly {
+										delete(event, "item_id")
+									} else {
+										event["item_id"] = fmt.Sprintf("opaque_%d_%d", i, n)
+									}
+								}
 							} else {
 								event["call_id"] = callIDs[i]
 								event["name"] = names[i]
@@ -126,6 +140,14 @@ func TestHandleCodexStream_ParallelToolArguments(t *testing.T) {
 					event := map[string]any{"type": "response.function_call_arguments.done", "arguments": fullArgs[i]}
 					if tt.added {
 						event["item_id"] = itemIDs[i]
+						if tt.rotatingItemIDs || tt.indexOnly {
+							event["output_index"] = i * 2
+							if tt.indexOnly {
+								delete(event, "item_id")
+							} else {
+								event["item_id"] = fmt.Sprintf("opaque_done_%d", i)
+							}
+						}
 					} else {
 						event["call_id"] = callIDs[i]
 						event["name"] = names[i]
@@ -139,7 +161,7 @@ func TestHandleCodexStream_ParallelToolArguments(t *testing.T) {
 				for range 2 {
 					for _, i := range []int{1, 0} {
 						emit(map[string]any{
-							"type": "response.output_item.done", "output_index": i,
+							"type": "response.output_item.done", "output_index": i * 2,
 							"item": map[string]any{"type": "function_call", "id": itemIDs[i], "call_id": callIDs[i], "name": names[i], "arguments": fullArgs[i]},
 						})
 					}
