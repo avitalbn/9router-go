@@ -129,7 +129,7 @@ export interface APIKey {
   machineId: string | null
   isActive: number
   createdAt: string
-  /** Masked secret, e.g. `sk-6…008f`. Always present. */
+  /** Masked secret, same length as the key itself, e.g. `sk-6••008f`. Always present. */
   keyDisplay?: string
   /** Rate limits. 0 means unlimited. */
   rateLimitRpm?: number
@@ -235,6 +235,10 @@ export interface Settings {
   appLogoUrl?: string
   requireApiKey?: boolean
   tunnelDashboardAccess?: boolean
+  tunnelWatchdogEnabled?: boolean
+  tailscaleWatchdogEnabled?: boolean
+  hideUnusedTunnel?: boolean
+  tunnelWorkerUrl?: string
   rtkEnabled?: boolean
   rtkMode?: 'simple' | 'advance' | string
   rtkIntensity?: 'minimal' | 'standard' | 'aggressive' | string
@@ -334,6 +338,18 @@ export interface TunnelStatusResponse {
     tunnelUrl?: string
     publicUrl?: string
     running?: boolean
+    state?: string
+    mode?: string
+    shortId?: string
+    customDomain?: string
+    token?: string
+    cfApiToken?: string
+    previousUrl?: string
+    rotatedAt?: string
+    workerUrl?: string
+    reachable?: boolean
+    everReachable?: boolean
+    connectingLabel?: string
   }
   tailscale?: {
     enabled?: boolean
@@ -341,6 +357,14 @@ export interface TunnelStatusResponse {
     tunnelUrl?: string
     running?: boolean
     loggedIn?: boolean
+    installed?: boolean
+    reachable?: boolean
+    everReachable?: boolean
+    authUrl?: string
+    authMode?: string
+    authKey?: string
+    statusText?: string
+    repairTunnelOrigin?: boolean
   }
   download?: {
     downloading?: boolean
@@ -703,6 +727,32 @@ export interface CodexResetCreditConsumeResponse {
   idempotencyKey?: string
   error?: string
   code?: string
+}
+
+// GLM Reset Cards (Z.ai international). Mirrors the Go GLMResetCard and
+// GLMResetCardsResponse types.
+export interface GLMResetCard {
+  recordId: string
+  type: 'FIVE_HOUR' | 'WEEK'
+  expiresAt: string // RFC3339 UTC
+}
+
+export interface GLMResetCardsResponse {
+  availableCount: number
+  cards: GLMResetCard[]
+  error?: string
+}
+
+export interface GLMResetCardRedeemResponse {
+  reset: boolean
+  alreadyUsed?: boolean
+  uncertain?: boolean
+  code: string
+  message: string
+  recordId: string
+  type: string
+  requestId: string
+  error?: string
 }
 
 export interface FreebuffSessionSwitchResponse {
@@ -1978,7 +2028,7 @@ export const api = {
       { method: 'POST', body: JSON.stringify({ provider, ...opts }) }
     ),
   devicePoll: (provider: string, deviceCode: string, session?: Record<string, unknown>) =>
-    request<{ status: string; connectionId?: string; error?: string }>('/api/oauth/device/poll', {
+    request<{ status: string; connectionId?: string; error?: string; interval?: number }>('/api/oauth/device/poll', {
       method: 'POST',
       body: JSON.stringify({ provider, device_code: deviceCode, session }),
     }),
@@ -2093,7 +2143,15 @@ export const api = {
   },
 
   // Usage & Telemetry
-  getUsageStats: (period = 'today') => request<any>(`/api/usage/stats?period=${encodeURIComponent(period)}`),
+  /**
+   * Usage aggregates for a window. `views` names the breakdowns to build:
+   * `none` is totals only (plus byProvider, which the totals are summed from),
+   * and omitting it returns every breakdown — the shape this call always had.
+   */
+  getUsageStats: (period = 'today', views?: string) =>
+    request<any>(
+      `/api/usage/stats?period=${encodeURIComponent(period)}${views ? `&views=${encodeURIComponent(views)}` : ''}`
+    ),
   /** One chart point: bucket label (HH:MM or MMM D), totals, and the per-model-family token split. */
   getUsageChart: (period = '7d') =>
     request<{ label: string; tokens: number; cost: number; byModel: Record<string, number> }[]>(
@@ -2173,18 +2231,56 @@ export const api = {
         body: JSON.stringify({ selectionToken, idempotencyKey }),
       }
     ),
+  // GLM Reset Cards (Z.ai international). Only for provider == "glm".
+  getGlmResetCards: (connectionId: string) =>
+    request<GLMResetCardsResponse>(
+      `/api/usage/${encodeURIComponent(connectionId)}/glm-reset-cards`
+    ),
+  redeemGlmResetCard: (connectionId: string, payload: { recordId: string; type: 'FIVE_HOUR' | 'WEEK' }) =>
+    request<GLMResetCardRedeemResponse>(
+      `/api/usage/${encodeURIComponent(connectionId)}/glm-reset-cards`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }
+    ),
   // Tunnel & Tailscale
   getTunnelStatus: () =>
     request<TunnelStatusResponse>('/api/tunnel/status').catch(() => ({
       tunnel: { enabled: false, running: false, tunnelUrl: '', publicUrl: '' },
       tailscale: { enabled: false, running: false, tunnelUrl: '', loggedIn: false },
     })),
-  enableTunnel: () =>
-    request<{ success?: boolean; tunnelUrl?: string; publicUrl?: string; error?: string }>('/api/tunnel/enable', {
+  enableTunnel: (payload?: {
+    mode?: string
+    shortId?: string
+    customDomain?: string
+    token?: string
+    cfApiToken?: string
+    cfAccountId?: string
+    cfZone?: string
+    workerUrl?: string
+  }) =>
+    request<{
+      success?: boolean
+      tunnelUrl?: string
+      publicUrl?: string
+      error?: string
+      mode?: string
+      shortId?: string
+      customDomain?: string
+      token?: string
+      cfApiToken?: string
+    }>('/api/tunnel/enable', {
       method: 'POST',
+      body: JSON.stringify(payload ?? {}),
     }),
   disableTunnel: () =>
     request<{ success?: boolean; error?: string }>('/api/tunnel/disable', {
+      method: 'POST',
+    }),
+  repairTunnelOrigin: () =>
+    request<{ success?: boolean; hostname?: string; port?: number; error?: string }>('/api/tunnel/repair-origin', {
       method: 'POST',
     }),
   checkTailscale: () =>
@@ -2192,9 +2288,18 @@ export const api = {
       installed: false,
       loggedIn: false,
     })),
-  enableTailscale: () =>
-    request<{ success?: boolean; tunnelUrl?: string; needsLogin?: boolean; authUrl?: string; funnelNotEnabled?: boolean; error?: string }>('/api/tunnel/tailscale-enable', {
+  enableTailscale: (payload?: { authKey?: string; authMode?: string }) =>
+    request<{
+      success?: boolean
+      tunnelUrl?: string
+      needsLogin?: boolean
+      authUrl?: string
+      funnelNotEnabled?: boolean
+      error?: string
+      repairTunnelOrigin?: boolean
+    }>('/api/tunnel/tailscale-enable', {
       method: 'POST',
+      body: JSON.stringify(payload ?? {}),
     }),
   disableTailscale: () =>
     request<{ success?: boolean; error?: string }>('/api/tunnel/tailscale-disable', {
@@ -2523,4 +2628,13 @@ export const api = {
     request<{ connections: Array<{ id: string; name: string; authType: string; key: string }> }>(
       `/api/providers/${encodeURIComponent(providerId)}/export-keys`,
     ),
+  testComboModels: (id: string, opts?: { models?: string[]; kind?: string }) =>
+    request<{
+      comboId: string
+      summary: { total: number; alive: number; dead: number }
+      results: Array<{ model: string; ok: boolean; latencyMs: number; error?: string; status?: number }>
+    }>(`/api/combos/${encodeURIComponent(id)}/test-models`, {
+      method: 'POST',
+      body: JSON.stringify(opts || {}),
+    }),
 }

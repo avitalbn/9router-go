@@ -669,6 +669,13 @@ func init() {
 	// PROVIDER_CAPABILITIES["minimax-code-global"] = PROVIDER_CAPABILITIES["minimax-code"]).
 	providerCapabilities["minimax-code-global"] = providerCapabilities["minimax-code"]
 
+	// zcode: ZCode start-plan lane. The gateway accepts the Anthropic Messages
+	// wire with the same GLM models as the apikey lane; thinking follows the
+	// zai format (the executor already maps it).
+	providerCapabilities["zcode"] = map[string]Capabilities{
+		"glm-5.3":       {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "zai", ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 131072},
+		"glm-5.3-flash": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "zai", ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 131072},
+	}
 	// DaoXE (daoxe) — OpenAI-compatible free tier
 	providerCapabilities["daoxe"] = map[string]Capabilities{
 		"gpt-4o":        {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 128000, MaxOutput: 16384},
@@ -731,11 +738,17 @@ var patternCapabilities = []patternCapability{
 	{pattern: "*claude*opus-4.8*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"}},
 	{pattern: "*claude*sonnet-4.6*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"}},
 	{pattern: "*claude*sonnet-4.7*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"}},
+	// Dashed ids (Bedrock `us.anthropic.claude-opus-4-7`) miss the dotted patterns above and
+	// would fall to *claude*opus-4* (budget), which Opus 4.7/4.8 reject with a 400.
+	{pattern: "*claude*opus-4-7*", caps: Capabilities{Vision: true, PDF: true, Reasoning: true, Search: true, ThinkingFormat: "claude-adaptive"}},
+	{pattern: "*claude*opus-4-8*", caps: Capabilities{Vision: true, PDF: true, Reasoning: true, Search: true, ThinkingFormat: "claude-adaptive"}},
 	{pattern: "*claude*haiku*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-budget"}},
 	{pattern: "*claude*opus*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-budget"}},
 	{pattern: "*claude*sonnet*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-budget"}},
-	{pattern: "*claude*fable*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-budget"}},
-	{pattern: "*claude*mythos*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-budget"}},
+	// Fable/Mythos: thinking is always on — `enabled`+budget_tokens and `disabled` both 400.
+	// Covers prefixed ids such as Bedrock `us.anthropic.claude-fable-5-1`.
+	{pattern: "*claude*fable*", caps: Capabilities{Vision: true, PDF: true, Reasoning: true, Search: true, ThinkingFormat: "claude-adaptive", ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 128000}},
+	{pattern: "*claude*mythos*", caps: Capabilities{Vision: true, PDF: true, Reasoning: true, Search: true, ThinkingFormat: "claude-adaptive", ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 128000}},
 	{pattern: "*claude-3*", caps: Capabilities{Vision: true, Tools: true}},
 	{pattern: "*claude*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-budget"}},
 

@@ -76,26 +76,35 @@ func ForwardCodebuddyCN(w http.ResponseWriter, req *Request) error {
 		}
 		return fmt.Errorf("ForwardCodebuddyCN upstream: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	forwardUpstreamResponseHeaders(w, resp.Header)
 
 	if req.IsStream {
 		if !isEventStreamResponse(resp.Header) {
-			data, rerr := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes))
-			if rerr != nil {
-				return fmt.Errorf("read codebuddy upstream body: %w", rerr)
-			}
-			if !proxy.LooksLikeSSE(data) {
+			// Head sniff instead of a whole-body read: a CodeBuddy stream
+			// that arrives with a JSON content-type keeps streaming frame by
+			// frame, and only a genuine document is read whole.
+			head := sniffStreamHead(resp.Body)
+			if proxy.LooksLikeSSE(head) {
+				// The upstream body stays the Closer: the stall watchdog ends
+				// a stuck stream by closing the reader, so a NopCloser here
+				// would leave it unable to.
+				resp.Body = replayBody{Reader: io.MultiReader(bytes.NewReader(head), resp.Body), Closer: resp.Body}
+			} else {
+				rest, rerr := io.ReadAll(io.LimitReader(resp.Body, constants.MaxUpstreamBodyBytes-int64(len(head))))
+				if rerr != nil {
+					return fmt.Errorf("read codebuddy upstream body: %w", rerr)
+				}
+				data := append(head, rest...)
 				if isCodebuddyRateLimit(data) {
 					return proxy.UpstreamFailure(http.StatusTooManyRequests, "CodeBuddy frequency limit (6004)")
 				}
 				return jsonResponse(req.Ctx, w, bytes.NewReader(data), req.TranslateResp, req.ResponseBuf)
 			}
-			resp.Body = io.NopCloser(bytes.NewReader(data))
 		}
-		stallReader := proxy.NewStallReaderWithContext(req.Ctx, resp.Body, 0, "codebuddy-cn")
-		defer stallReader.Close() // stops the shutdown watcher + stall timer
+		stallReader := proxy.NewStallReaderWithContext(req.Ctx, resp.Body, req.Config.ResolveStallTimeout(proxy.ResolveDefaultStallTimeout()), "codebuddy-cn")
+		defer func() { _ = stallReader.Close() }() // stops the shutdown watcher + stall timer
 		return execSSEStream(w, stallReader, req)
 	}
 
@@ -271,6 +280,15 @@ func codebuddyHeaders(req *Request, cfg *providers.ProviderConfig, body []byte) 
 	reqID := strings.ReplaceAll(uuid.NewString(), "-", "")
 	convReqID := strings.ReplaceAll(uuid.NewString(), "-", "")
 
+	// The CN lane tracks the current Tencent CLI build (anti-ban: an outdated
+	// UA reads as a silent/bot client); the intl lane keeps its own identity,
+	// which is set where the provider is configured. Mirrors upstream registry
+	// #3257 (codebuddy-cn.js: CLI/2.133.1 + X-IDE-Version).
+	cliVersion := "2.108.1"
+	if req != nil && req.Provider == "codebuddy-cn" {
+		cliVersion = codebuddyCLIVersion
+	}
+
 	sessionKey := req.SessionID
 	if sessionKey == "" && req.ConnData != nil {
 		if m, ok := req.ConnData["sessionId"].(string); ok {
@@ -296,15 +314,18 @@ func codebuddyHeaders(req *Request, cfg *providers.ProviderConfig, body []byte) 
 	if domain == "www.codebuddy.ai" && cfg != nil && (strings.Contains(cfg.BaseURL, "tencent.com") || strings.Contains(cfg.BaseURL, "copilot.")) {
 		domain = "copilot.tencent.com"
 	}
+	if req != nil && req.Provider == "codebuddy-cn" && domain == "www.codebuddy.ai" {
+		domain = "www.codebuddy.cn"
+	}
 
 	return map[string]string{
 		"Content-Type":                "application/json; charset=utf-8",
-		"User-Agent":                  "CLI/2.108.1 CodeBuddy/2.108.1",
+		"User-Agent":                  "CLI/" + cliVersion + " CodeBuddy/" + cliVersion,
 		"X-Product":                   "SaaS",
 		"X-App":                       "cli",
 		"X-IDE-Type":                  "CLI",
 		"X-IDE-Name":                  "CLI",
-		"X-IDE-Version":               "2.108.1",
+		"X-IDE-Version":               cliVersion,
 		"X-Private-Data":              "false",
 		"X-Requested-With":            "XMLHttpRequest",
 		"X-CodeBuddy-Request":         "1",

@@ -22,6 +22,7 @@ import (
 	"9router/proxy/internal/schedule"
 	"9router/proxy/internal/shutdown"
 	"9router/proxy/internal/updater"
+	"9router/proxy/internal/uptime"
 )
 
 // ServerModule provides *http.Server and manages its lifecycle and background tasks.
@@ -117,6 +118,7 @@ func ProvideServer(p ServerParams) *http.Server {
 			executor.StartGeminiWebRotation(shutdown.Context(), p.Repo)
 			startAutoPingScheduler(shutdown.Context(), p.Repo, p.ChatHandler)
 			startModelHealthScheduler(shutdown.Context(), p.Repo, p.ChatHandler)
+			startUptimeHeartbeat(shutdown.Context(), p.Repo)
 
 			log.Printf("9router-go Proxy (%s) starting on port %d", updater.CurrentVersion, p.Config.Port)
 
@@ -150,6 +152,12 @@ func ProvideServer(p ServerParams) *http.Server {
 				log.Printf("Server shutdown did not complete in time: %v", err)
 			} else {
 				log.Println("Server stopped gracefully")
+			}
+			// Responses are all done by now, so every usage write they enqueued
+			// is in the queue: drain it so the last turns are not billed into
+			// nothing by the exit.
+			if !chat.FlushUsageWrites(3 * time.Second) {
+				log.Printf("Usage write queue did not fully drain before exit")
 			}
 			return nil
 		},
@@ -187,4 +195,48 @@ func startAutoPingScheduler(ctx context.Context, repo *db.Repo, chatH *chat.Chat
 
 	go sched.Run(ctx)
 	log.Println("[autoping] scheduler started")
+}
+
+// startUptimeHeartbeat starts the Uptime Kuma push loop.
+//
+// The loop ticks on the operator's configured interval and pushes a heartbeat
+// to the push URL saved in settings, so a monitor learns the gateway is down
+// from the missing heartbeat rather than an operator learning it from a CLI
+// tool that stopped answering.
+//
+// The configuration is read from the settings row on EVERY tick, never cached,
+// so a URL saved in the dashboard takes effect on the next heartbeat without a
+// restart. A tick with no configuration is a no-op rather than an error: an
+// operator who never set a push URL must not produce a failure log a minute.
+//
+// The loop is bound to the shutdown context, so it stops with the other
+// background loops. A failed push is logged and dropped — the monitor marks
+// the gateway down when the next push does not arrive either, and retrying
+// inside the tick would stall the loop on a monitor that is already gone.
+func startUptimeHeartbeat(ctx context.Context, repo *db.Repo) {
+	if repo == nil {
+		return
+	}
+	loop := uptime.NewLoop(
+		func() uptime.Config {
+			s, err := repo.GetSettings()
+			if err != nil || s == nil {
+				return uptime.Config{}
+			}
+			return uptime.Config{
+				Enabled:         s.UptimeKumaEnabled,
+				PushURL:         s.UptimeKumaPushURL,
+				IntervalSeconds: s.UptimeKumaInterval,
+			}
+		},
+		func() uptime.Pusher {
+			s, err := repo.GetSettings()
+			if err != nil || s == nil {
+				return nil
+			}
+			return &uptime.HTTPPusher{URL: s.UptimeKumaPushURL}
+		},
+	)
+	go loop.Run(ctx)
+	log.Println("[uptime] heartbeat loop started")
 }

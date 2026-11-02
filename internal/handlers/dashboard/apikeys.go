@@ -1,7 +1,6 @@
 package dashboard
 
 import (
-	"context"
 	json "encoding/json/v2"
 	"errors"
 	"io"
@@ -57,6 +56,19 @@ func (h *DashboardHandler) HandleGetApiKeys(w http.ResponseWriter, r *http.Reque
 		accessReadFailed = true
 	}
 
+	// The spend a tokenQuota is measured against is one statement for the
+	// whole page: the ledger scan the sum runs over is the listing's heaviest
+	// read, and paying it once per row was the N+1 that dominated the request
+	// on a ledger past a hundred thousand rows.
+	usage, usageErr := h.Repo.GetApiKeyTokenUsageForKeys(r.Context(), keys)
+	if usageErr != nil {
+		// A read failure reports 0 rather than failing the listing, because
+		// the progress bar is informational; the limiter enforces the same
+		// quota from the same repository read on the request path.
+		log.Warn("apikeys", "usage read for the key list failed; reporting zero spend", "error", usageErr)
+		usage = map[string]int{}
+	}
+
 	sanitized := make([]map[string]any, 0, len(keys))
 	for _, k := range keys {
 		if k == nil {
@@ -90,16 +102,25 @@ func (h *DashboardHandler) HandleGetApiKeys(w http.ResponseWriter, r *http.Reque
 			"rateLimitConcurrency": intOrZero(k.RateLimitConcurrency),
 			"tokenQuota":           intOrZero(k.TokenQuota),
 			"queueTimeoutMs":       intOrZero(k.QueueTimeoutMs),
-			"expiresAt":            stringOrEmpty(k.ExpiresAt),
-			"lastUsedAt":           stringOrEmpty(k.LastUsedAt),
-			"usedCount":            intOrZero(k.UsedCount),
-			"metadata":             stringOrEmpty(k.Metadata),
+			// F-2 per-period budget. They travel with the row for the same
+			// reason the rate limits do: a key with a ceiling configured has to
+			// be distinguishable from one without at a glance, and omitting
+			// them made every row read as unbudgeted.
+			"limitMicros":  k.LimitMicros,
+			"limitTokens":  k.LimitTokens,
+			"budgetPeriod": k.BudgetPeriod,
+			"alertPct":     k.AlertPct,
+			"hardCutoff":   k.HardCutoff,
+			"expiresAt":    stringOrEmpty(k.ExpiresAt),
+			"lastUsedAt":   stringOrEmpty(k.LastUsedAt),
+			"usedCount":    intOrZero(k.UsedCount),
+			"metadata":     stringOrEmpty(k.Metadata),
 			// #365 The spend a tokenQuota is measured against. The dashboard
 			// renders it against the quota as a progress bar and offers a
 			// reset, so it has to travel with the row: without it every
 			// exhausted key looked untouched and every untouched one looked
 			// exhausted.
-			"usedTokens": apiKeyUsedTokens(r.Context(), h.Repo, k.ID),
+			"usedTokens": usage[k.ID],
 		})
 	}
 	handlerutil.WriteJSON(w, http.StatusOK, sanitized)
@@ -127,11 +148,25 @@ func apiKeyDisplay(k *models.APIKey) string {
 
 // maskClientKey shows the first/last few chars of a client key (dashboard
 // display only).
+//
+// The mask keeps the key's exact length. Collapsing the middle to a single
+// ellipsis told the reader two things it had no business knowing: that the key
+// was longer than twelve characters, and roughly how much longer. A mask whose
+// length tracks the thing it hides is not a mask — it is a length oracle.
+//
+// Keeping the count also means a revealed key and its mask occupy the same
+// width, so the row does not reflow when the operator presses reveal and the
+// buttons beside the value stay where they were.
 func maskClientKey(key string) string {
-	if handlerutil.RuneCount(key) <= 12 {
+	n := handlerutil.RuneCount(key)
+	if n <= 12 {
 		return "***"
 	}
-	return handlerutil.RunePrefix(key, 6) + "…" + handlerutil.RuneSuffix(key, 4)
+	const prefix = 6
+	const suffix = 4
+	return handlerutil.RunePrefix(key, prefix) +
+		strings.Repeat("•", n-prefix-suffix) +
+		handlerutil.RuneSuffix(key, suffix)
 }
 
 // apiKeyIDs collects the non-empty ids of a key listing, for the single
@@ -163,26 +198,6 @@ func stringOrEmpty(v *string) string {
 	return *v
 }
 
-// apiKeyUsedTokens reads the spend a key's tokenQuota is measured against.
-//
-// The listing is bounded by the number of client keys an operator has minted —
-// tens, not thousands — so one read per row is cheaper than the alternative: a
-// join against a masked-key column that carries no index. A read failure
-// reports 0 rather than failing the listing, because the progress bar is
-// informational; the limiter enforces the same quota from the same repository
-// read on the request path.
-func apiKeyUsedTokens(ctx context.Context, repo *db.Repo, keyID string) int {
-	if repo == nil || keyID == "" {
-		return 0
-	}
-	used, err := repo.GetApiKeyTokenUsageByID(ctx, keyID)
-	if err != nil {
-		log.Warn("apikeys", "usage read failed for list row", "error", err, "apiKeyId", keyID)
-		return 0
-	}
-	return used
-}
-
 // apiKeyQuotaResetAt was the reset stamp reader. The mark is a usageHistory row
 // id now (#365), and the list does not carry it: the dashboard's progress bar
 // needs the spend, and the reset action reads the mark from its own response.
@@ -209,7 +224,16 @@ func (h *DashboardHandler) HandleCreateApiKey(w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
-
+	// The name is trimmed and capped here for the same reason PUT caps it: it
+	// rides along on every /api/keys listing and is rendered in the dashboard
+	// list, so a pasted megabyte would be echoed on every call. Trimming also
+	// stores a whitespace-only name as empty rather than as a row the table
+	// renders blank, which is what the operator typed by accident.
+	req.Name = strings.TrimSpace(req.Name)
+	if len(req.Name) > maxAPIKeyNameLen {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "name is too long")
+		return
+	}
 	if req.ID == "" {
 		req.ID = uuid.New().String()
 	}

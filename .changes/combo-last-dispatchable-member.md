@@ -5,12 +5,13 @@
   (model-locked, unresolvable, or with no usable connection) the member before
   it still got a timer and the turn answered `504 model response timeout`
   where the same combo without the setting answered. Both combo loops (chat and
-  Messages/Responses) now ask whether any later entry can still be dispatched,
-  using a read-only check that mirrors the loop's own skips
-  (`comboEntryTriable`; `getBestConnection` is not reused because it advances
-  connection rotation). The same decision drives the zero-content probe, which
-  had the same blind spot. The no-connection case was not listed in #776 and
-  matters most for combos that mix connected and unconnected providers.
+  Messages/Responses) now use upstream's `comboLastTried` tracker, a read-only
+  check that mirrors the loop's own skips and is recomputed when the pass
+  excludes another connection (`getBestConnection` is not reused because it
+  advances connection rotation). The same decision drives the zero-content
+  probe, which had the same blind spot. The no-connection case was not listed
+  in #776 and matters most for combos that mix connected and unconnected
+  providers.
 - **A combo none of whose members has a connection names the reason.** It
   answered `502 all combo models failed: no valid entries`; it now answers
   `502 all combo models failed: no active connections for provider: xai; ...`,
