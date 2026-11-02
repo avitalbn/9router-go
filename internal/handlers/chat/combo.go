@@ -554,6 +554,8 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 	cw.stream = isStream
 	cw.responsesClient = translator.IsResponsesClient(ctx)
 	var lastErr *upstreamError
+	started := time.Now()
+	defer func() { h.logUndispatchedCombo(ctx, comboName, body, lastErr, started) }()
 	var connFailures comboConnFailures
 	var retry passRetry
 	responseTimeout, timeoutGrace := h.comboTimeoutPolicy(comboName)
@@ -617,10 +619,12 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 		for i, entry := range models {
 			modelInfo := h.resolveModelEntry(entry)
 			if modelInfo == nil {
+				recordSkippedCandidate(ctx, "", entry, "", fmt.Errorf("unresolved model entry"))
 				continue
 			}
 			// Skip unavailable (model-locked) providers
 			if !h.Repo.IsProviderAvailable(modelInfo.Provider, modelInfo.Model) {
+				recordSkippedCandidate(ctx, modelInfo.Provider, modelInfo.Model, "", fmt.Errorf("provider/model in cooldown or unavailable"))
 				log.Warn("combo", "skip unhealthy", "provider", modelInfo.Provider, "model", modelInfo.Model)
 				if lastErr == nil {
 					lastErr = &upstreamError{StatusCode: http.StatusTooManyRequests, Body: []byte(`{"error":{"message":"all connections for this provider are rate-limited","type":"rate_limit_error","code":429}}`)}
@@ -659,6 +663,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 					var err error
 					picked, cData, err = h.getBestConnectionWithContext(candidateCtx, modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
 					if err != nil {
+						recordSkippedCandidate(ctx, modelInfo.Provider, modelInfo.Model, modelInfo.ConnectionID, err)
 						// A node the gateway refuses on purpose — expired contract,
 						// spent lifetime quota — must reach the client as that
 						// refusal rather than as an anonymous "all combo models
@@ -688,6 +693,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 						locked, _ = h.Repo.IsConnectionModelLocked(connID, modelInfo.Model)
 					}
 					if locked {
+						recordSkippedCandidate(ctx, modelInfo.Provider, modelInfo.Model, connID, fmt.Errorf("connection/model in cooldown"))
 						log.Warn("combo", "skip locked connection", "provider", modelInfo.Provider, "model", modelInfo.Model, "lockKey", lockKey, "conn", connID)
 						excludeIDs = append(excludeIDs, connID)
 						continue
@@ -742,7 +748,7 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 						fwdErr = finishErr
 					}
 				}
-				RecordAttemptFromContext(ctx, connID, connObjName(picked), modelInfo.Provider, modelInfo.Model, 0, fwdErr, time.Since(attemptStart).Milliseconds())
+				RecordAttemptFromContext(candidateCtx, connID, connObjName(picked), modelInfo.Provider, modelInfo.Model, 0, fwdErr, time.Since(attemptStart).Milliseconds())
 
 				if fwdErr != nil {
 					if timeoutGate != nil && timeoutGate.timedOut() && ctx.Err() == nil {
@@ -921,6 +927,8 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 
 	// Auto-capability-switch: convert body to JSON for detection
 	bodyJSON, _ := json.Marshal(translatedReq)
+	started := time.Now()
+	defer func() { h.logUndispatchedCombo(ctx, comboName, bodyJSON, lastErr, started) }()
 	// Connections that failed with a retryable status this request; remaining
 	// combo models must not re-select them (same account = same 429 quota).
 	var excludeIDs []string
@@ -964,10 +972,12 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 		for i, entry := range models {
 			modelInfo := h.resolveModelEntry(entry)
 			if modelInfo == nil {
+				recordSkippedCandidate(ctx, "", entry, "", fmt.Errorf("unresolved model entry"))
 				continue
 			}
 			// Skip unavailable (model-locked) providers
 			if !h.Repo.IsProviderAvailable(modelInfo.Provider, modelInfo.Model) {
+				recordSkippedCandidate(ctx, modelInfo.Provider, modelInfo.Model, "", fmt.Errorf("provider/model in cooldown or unavailable"))
 				log.Warn("combo", "skip unhealthy", "provider", modelInfo.Provider, "model", modelInfo.Model)
 				if lastErr == nil {
 					lastErr = &upstreamError{StatusCode: http.StatusTooManyRequests, Body: []byte(`{"error":{"message":"all connections for this provider are rate-limited","type":"rate_limit_error","code":429}}`)}
@@ -1004,6 +1014,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 					var err error
 					picked, cData, err = h.getBestConnectionWithContext(candidateCtx, modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
 					if err != nil {
+						recordSkippedCandidate(ctx, modelInfo.Provider, modelInfo.Model, modelInfo.ConnectionID, err)
 						if refusal, blocked := providerLimitRefusal(err); blocked {
 							log.Info("combo", "provider node unusable, next candidate",
 								"provider", modelInfo.Provider, "model", modelInfo.Model, "axis", refusal.Axis)
@@ -1027,6 +1038,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 						locked, _ = h.Repo.IsConnectionModelLocked(connID, modelInfo.Model)
 					}
 					if locked {
+						recordSkippedCandidate(ctx, modelInfo.Provider, modelInfo.Model, connID, fmt.Errorf("connection/model in cooldown"))
 						log.Warn("combo", "skip locked connection", "provider", modelInfo.Provider, "model", modelInfo.Model, "lockKey", lockKey, "conn", connID)
 						excludeIDs = append(excludeIDs, connID)
 						continue
@@ -1072,7 +1084,7 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 						fwdErr = finishErr
 					}
 				}
-				RecordAttemptFromContext(ctx, connID, connObjName(picked), modelInfo.Provider, modelInfo.Model, 0, fwdErr, time.Since(attemptStart).Milliseconds())
+				RecordAttemptFromContext(candidateCtx, connID, connObjName(picked), modelInfo.Provider, modelInfo.Model, 0, fwdErr, time.Since(attemptStart).Milliseconds())
 
 				if fwdErr != nil {
 					if timeoutGate != nil && timeoutGate.timedOut() && ctx.Err() == nil {

@@ -116,7 +116,7 @@
       const prov = (item.provider || '').toLowerCase()
       const mdl = (item.model || '').toLowerCase()
       const id = (item.id || '').toLowerCase()
-      return acc.includes(q) || prov.includes(q) || mdl.includes(q) || id.includes(q)
+      return acc.includes(q) || prov.includes(q) || mdl.includes(q) || id.includes(q) || (item.requestId || '').toLowerCase().includes(q) || (item.requestedModel || item.combo || '').toLowerCase().includes(q)
     })
   })
 </script>
@@ -139,7 +139,7 @@
         </span>
         <input
           type="text"
-          placeholder="Filter model, account, provider..."
+          placeholder="Filter combo, model, request ID..."
           bind:value={searchFilter}
           class="w-44 sm:w-56 rounded-xl border border-border bg-surface pl-8 pr-3 py-1 text-xs text-text-main focus:outline-none focus:border-brand-500"
         />
@@ -436,30 +436,35 @@
           </div>
         {/if}
 
-        {#if selectedDetail.attempts && selectedDetail.attempts.length > 1}
+        {#if selectedDetail.requestId}
+          <div class="text-xs text-text-muted break-all">
+            Request ID: <span class="font-code text-text-main">{selectedDetail.requestId}</span>
+          </div>
+        {/if}
+        {#if selectedDetail.attempts?.length}
           <div class="p-3.5 rounded-xl bg-surface-2/60 border border-border space-y-2">
             <div class="text-[10px] text-text-muted uppercase font-bold tracking-wider">
-              Account Failover Trail ({selectedDetail.attempts.length} attempts)
+              Model & Account Chain ({selectedDetail.attempts.length} attempts)
             </div>
-            <div class="flex flex-wrap items-center gap-2">
-              {#each selectedDetail.attempts as att, i}
-                {#if i > 0}
-                  <span class="material-symbols-outlined text-[16px] text-text-subtle">arrow_forward</span>
-                {/if}
-                <div class="flex items-center gap-2 rounded-lg border border-border bg-surface px-2.5 py-1.5">
-                  <span class="px-1.5 py-0.5 rounded border text-[10px] font-bold {att.statusCode === 200 || att.statusCode === '200' ? 'text-emerald-500 bg-emerald-500/10 border-emerald-500/20' : 'text-red-500 bg-red-500/10 border-red-500/20'}">
-                    {att.statusCode ?? '—'}
-                  </span>
-                  <span class="font-medium text-text-main text-xs">{att.account || att.connectionId}</span>
-                  {#if att.latencyMs != null}
-                    <span class="text-text-muted text-[11px]">({att.latencyMs}ms)</span>
-                  {/if}
-                  {#if att.error}
-                    <span class="text-[11px] text-text-muted truncate max-w-[200px]">{att.error}</span>
-                  {/if}
-                </div>
+            <p class="text-xs text-text-muted">Attempts through this row, in execution order. Later fallback results appear in subsequent rows with the same request ID.</p>
+            {#if selectedDetail.attempts.length >= 64}<p class="text-xs text-text-muted">Trail limited to 64 entries; intermediate attempts may be omitted.</p>{/if}
+            <ol class="space-y-2">
+              {#each selectedDetail.attempts as att, i (i)}
+                <li class="rounded-lg border border-border bg-surface px-3 py-2 space-y-1">
+                  <div class="flex flex-wrap items-center gap-2 text-xs">
+                    <span class="text-text-muted">{i + 1}.</span>
+                    <span class="font-code text-text-main break-all">{att.provider ? `${att.provider}/` : ''}{att.model}</span>
+                    <span class="font-bold {Number(att.statusCode) >= 200 && Number(att.statusCode) < 300 && !att.error ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-700 dark:text-red-400'}">{att.skipped ? 'Skipped' : att.statusCode || 'Unknown'}</span>
+                    {#if att.reason}<span class="text-text-muted">{att.reason.replaceAll('_', ' ')}</span>{/if}
+                    {#if att.latencyMs != null}<span class="text-text-muted">{formatDuration(att.latencyMs)}</span>{/if}
+                    {#if att.timeoutMs}<span class="text-text-muted">Response timeout: {formatDuration(att.timeoutMs)}</span>{/if}
+                  </div>
+                  <div class="text-xs text-text-muted break-all">{att.account || att.connectionId || 'Default connection'}</div>
+                  {#if att.startedAt}<div class="text-[11px] text-text-subtle">{formatLocalTimestamp(att.startedAt)}</div>{/if}
+                  {#if att.error}<p class="text-xs text-text-main whitespace-pre-wrap break-words">{att.error}</p>{/if}
+                </li>
               {/each}
-            </div>
+            </ol>
           </div>
         {/if}
 
@@ -531,14 +536,14 @@
           </div>
           {#if selectedDetail.id}
             <div class="p-3 rounded-xl bg-surface-2 border border-border space-y-1 col-span-1 sm:col-span-2 lg:col-span-3">
-              <div class="text-text-muted text-[10px] uppercase font-bold tracking-wider">Request ID</div>
+              <div class="text-text-muted text-[10px] uppercase font-bold tracking-wider">Detail ID</div>
               <div class="font-code text-xs text-text-muted flex items-center justify-between gap-2" title={selectedDetail.id}>
                 <span class="break-all select-all">{selectedDetail.id}</span>
                 <button
                   type="button"
                   onclick={() => copyToClipboard(selectedDetail?.id || '')}
                   class="text-text-subtle hover:text-text-main p-0.5 rounded hover:bg-surface-3 transition-colors shrink-0"
-                  title="Copy Request ID"
+                  title="Copy Detail ID"
                 >
                   <span class="material-symbols-outlined text-[14px]">content_copy</span>
                 </button>

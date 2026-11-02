@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	json "encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"
@@ -127,6 +128,37 @@ func TestComboModelResponseTimeoutEndpoints(t *testing.T) {
 				}
 				if locked, _ := repo.IsConnectionModelLocked("mock-a", "deepseek-chat"); locked {
 					t.Fatal("model timeout locked account")
+				}
+
+				rows, _, err := repo.GetRequestDetailsPaged(context.Background(), 10, 0, "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				foundTimeout := false
+				for _, row := range rows {
+					if row.Provider != "deepseek" {
+						continue
+					}
+					raw, err := repo.GetRequestDetailByID(row.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var detail struct {
+						Response struct {
+							Status int `json:"status"`
+						} `json:"response"`
+						Attempts []FallbackAttempt `json:"attempts"`
+					}
+					if err := json.Unmarshal([]byte(raw), &detail); err != nil {
+						t.Fatal(err)
+					}
+					if detail.Response.Status != 504 || len(detail.Attempts) != 1 || detail.Attempts[0].Reason != attemptTimeout || detail.Attempts[0].TimeoutMs != 100 {
+						t.Fatalf("timeout logged as abort or missing from trail: %s", raw)
+					}
+					foundTimeout = true
+				}
+				if !foundTimeout {
+					t.Fatal("timed-out model has no diagnostic row")
 				}
 				// The timed-out request must be hung up, not left running
 				// upstream after the client was answered.

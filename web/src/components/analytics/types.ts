@@ -64,9 +64,14 @@ export interface FallbackAttemptItem {
   statusCode?: number | string
   error?: string
   latencyMs?: number
+  startedAt?: string
+  timeoutMs?: number
+  skipped?: boolean
+  reason?: 'success' | 'timeout' | 'client_canceled' | 'quota_exceeded' | 'rate_limited' | 'authentication' | 'upstream_error' | 'unavailable'
 }
 
 export interface RequestDetailItem {
+  requestId?: string
   id?: string
   status?: string
   timestamp?: string

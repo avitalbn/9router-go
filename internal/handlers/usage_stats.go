@@ -530,18 +530,20 @@ func HandleUsageStats(repo *db.Repo) http.HandlerFunc {
 
 // detailListItem is one collapsed Details-tab row.
 type detailListItem struct {
-	ID           string           `json:"id"`
-	Timestamp    string           `json:"timestamp"`
-	Provider     string           `json:"provider"`
-	Model        string           `json:"model"`
-	ConnectionID string           `json:"connectionId,omitempty"`
-	Status       string           `json:"status"`
-	Latency      map[string]int64 `json:"latency"`
-	Tokens       map[string]any   `json:"tokens"`
-	Account      string           `json:"account,omitempty"`
-	Cost         float64          `json:"cost,omitempty"`
-	Combo        string           `json:"combo,omitempty"`
-	Protocol     string           `json:"protocol,omitempty"`
+	RequestID      string           `json:"requestId,omitempty"`
+	RequestedModel string           `json:"requestedModel,omitempty"`
+	ID             string           `json:"id"`
+	Timestamp      string           `json:"timestamp"`
+	Provider       string           `json:"provider"`
+	Model          string           `json:"model"`
+	ConnectionID   string           `json:"connectionId,omitempty"`
+	Status         string           `json:"status"`
+	Latency        map[string]int64 `json:"latency"`
+	Tokens         map[string]any   `json:"tokens"`
+	Account        string           `json:"account,omitempty"`
+	Cost           float64          `json:"cost,omitempty"`
+	Combo          string           `json:"combo,omitempty"`
+	Protocol       string           `json:"protocol,omitempty"`
 }
 
 // HandleRequestDetails returns paged request detail objects for the Details tab.
@@ -629,18 +631,20 @@ func newDetailListItem(row db.RequestDetailListRow) detailListItem {
 		protocol = "OpenAI-Chat"
 	}
 	return detailListItem{
-		ID:           row.ID,
-		Timestamp:    row.Timestamp,
-		Provider:     row.Provider,
-		Model:        row.Model,
-		ConnectionID: row.ConnectionID,
-		Status:       row.Status,
-		Latency:      map[string]int64{"ttft": row.LatencyTTFT, "total": row.LatencyTotal},
-		Tokens:       tokens,
-		Account:      account,
-		Cost:         row.Cost,
-		Combo:        row.Combo,
-		Protocol:     protocol,
+		RequestID:      row.RequestID,
+		RequestedModel: row.RequestedModel,
+		ID:             row.ID,
+		Timestamp:      row.Timestamp,
+		Provider:       row.Provider,
+		Model:          row.Model,
+		ConnectionID:   row.ConnectionID,
+		Status:         row.Status,
+		Latency:        map[string]int64{"ttft": row.LatencyTTFT, "total": row.LatencyTotal},
+		Tokens:         tokens,
+		Account:        account,
+		Cost:           row.Cost,
+		Combo:          row.Combo,
+		Protocol:       protocol,
 	}
 }
 

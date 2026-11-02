@@ -573,19 +573,21 @@ func (r *Repo) GetRecentUsageHistory(limit int) ([]UsageHistoryRow, error) {
 // those values out of the JSON and the payload stays behind
 // GetRequestDetailByID until a row is actually opened.
 type RequestDetailListRow struct {
-	ID           string
-	Timestamp    string
-	Provider     string
-	Model        string
-	ConnectionID string
-	Status       string
-	LatencyTTFT  int64
-	LatencyTotal int64
-	TokensJSON   string
-	Account      string
-	Cost         float64
-	Combo        string
-	Protocol     string
+	RequestID      string
+	RequestedModel string
+	ID             string
+	Timestamp      string
+	Provider       string
+	Model          string
+	ConnectionID   string
+	Status         string
+	LatencyTTFT    int64
+	LatencyTotal   int64
+	TokensJSON     string
+	Account        string
+	Cost           float64
+	Combo          string
+	Protocol       string
 }
 
 // requestDetailListSelect pulls the renderable values straight out of the
@@ -603,6 +605,8 @@ const requestDetailListSelect = `
 	       COALESCE(json_extract(data, '$.cost'), 0.0),
 	       COALESCE(json_extract(data, '$.combo'), ''),
 	       COALESCE(json_extract(data, '$.protocol'), ''),
+	       COALESCE(json_extract(data, '$.requestId'), ''),
+	       COALESCE(json_extract(data, '$.requestedModel'), ''),
 	       json_valid(data)
 	FROM requestDetails
 	%s
@@ -648,7 +652,7 @@ func (r *Repo) GetRequestDetailsPaged(ctx context.Context, limit, offset int, si
 		var dataValid int
 		if err := rows.Scan(&row.ID, &row.Timestamp, &row.Provider, &row.Model,
 			&row.ConnectionID, &row.Status, &row.LatencyTTFT, &row.LatencyTotal, &row.TokensJSON,
-			&row.Account, &row.Cost, &row.Combo, &row.Protocol,
+			&row.Account, &row.Cost, &row.Combo, &row.Protocol, &row.RequestID, &row.RequestedModel,
 			&dataValid); err != nil {
 			return nil, total, fmt.Errorf("scan requestDetails: %w", err)
 		}

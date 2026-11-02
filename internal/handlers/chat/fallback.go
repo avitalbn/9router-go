@@ -1225,7 +1225,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 }
 
 func isClientCanceled(ctx context.Context, err error) bool {
-	if ctx != nil && ctx.Err() != nil {
+	if ctx != nil && ctx.Err() != nil && !errors.Is(context.Cause(ctx), context.DeadlineExceeded) {
 		return true
 	}
 	var ue *upstreamError

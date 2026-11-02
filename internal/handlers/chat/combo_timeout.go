@@ -13,7 +13,7 @@ import (
 type comboResponseTimeout struct {
 	http.ResponseWriter
 	ctx       context.Context
-	cancel    context.CancelFunc
+	cancel    context.CancelCauseFunc
 	mu        sync.Mutex
 	timer     *time.Timer
 	committed bool
@@ -22,7 +22,8 @@ type comboResponseTimeout struct {
 }
 
 func newComboResponseTimeout(ctx context.Context, w http.ResponseWriter, timeout time.Duration) *comboResponseTimeout {
-	ctx, cancel := context.WithCancel(ctx)
+	ctx = context.WithValue(ctx, candidateTimeoutKey{}, timeout)
+	ctx, cancel := context.WithCancelCause(ctx)
 	t := &comboResponseTimeout{ResponseWriter: w, ctx: ctx, cancel: cancel, header: make(http.Header)}
 	t.timer = time.AfterFunc(timeout, t.expire)
 	return t
@@ -33,7 +34,7 @@ func (t *comboResponseTimeout) expire() {
 	defer t.mu.Unlock()
 	if !t.committed {
 		t.expired = true
-		t.cancel()
+		t.cancel(context.DeadlineExceeded)
 	}
 }
 
@@ -87,7 +88,7 @@ func (t *comboResponseTimeout) finish() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.timer.Stop()
-	t.cancel()
+	t.cancel(context.Canceled)
 	return t.expired
 }
 
@@ -166,4 +167,12 @@ func (h *ChatHandler) withoutBenchedModels(comboName string, models []string, gr
 
 func comboTimeoutError() *upstreamError {
 	return &upstreamError{StatusCode: http.StatusGatewayTimeout, Body: []byte(`{"error":{"message":"model response timeout","type":"timeout_error","code":504}}`)}
+}
+
+// candidateTimeoutKey is diagnostic metadata; it does not change the deadline.
+type candidateTimeoutKey struct{}
+
+func candidateTimeoutFrom(ctx context.Context) time.Duration {
+	timeout, _ := ctx.Value(candidateTimeoutKey{}).(time.Duration)
+	return timeout
 }

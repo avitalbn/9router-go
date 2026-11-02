@@ -86,9 +86,8 @@ func (h *ChatHandler) LogFailure(
 	if errors.As(err, &upstreamErr) && upstreamErr.StatusCode > 0 {
 		statusCode = upstreamErr.StatusCode
 	}
-	if isClientCanceled(ctx, err) {
-		statusCode = StatusClientClosedRequest
-	}
+	statusCode, _ = classifyAttempt(ctx, statusCode, err)
+
 	message := extractErrorText([]byte(err.Error()))
 	if message == "" {
 		var upstreamErr *upstreamError
@@ -127,7 +126,7 @@ func (h *ChatHandler) LogFailure(
 		"cacheSource":    info.CacheSource,
 		"status":         "error",
 		"timestamp":      now.Format("2006-01-02T15:04:05.000Z"),
-		"startedAt":      startedAt.Format("2006-01-02T15:04:05.000Z"),
+		"startedAt":      startedAt.UTC().Format("2006-01-02T15:04:05.000Z"),
 		"endedAt":        now.Format("2006-01-02T15:04:05.000Z"),
 		"latency": map[string]int64{
 			"ttft":  metricsTTFT(metrics),
@@ -137,11 +136,11 @@ func (h *ChatHandler) LogFailure(
 		"request":  map[string]any{"messages": extractRequestMessages(requestBody)},
 		"response": map[string]any{"error": message, "status": statusCode, "content": responseContent},
 	}
-	if rec := FallbackAttemptRecorderFrom(ctx); rec != nil {
-		if attempts := rec.Snapshot(); len(attempts) > 0 {
-			failurePayload["attempts"] = attempts
-		}
+	if attempts := detailAttemptTrail(ctx, info, statusCode, err, latencyMs); len(attempts) > 0 {
+		failurePayload["attempts"] = attempts
 	}
+	failurePayload["requestId"] = middleware.GetRequestIDFromContext(ctx)
+
 	reqData, marshalErr := json.Marshal(failurePayload)
 	if marshalErr != nil {
 		return
@@ -366,7 +365,7 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 		"cacheSource":    info.CacheSource,
 		"status":         "success",
 		"timestamp":      now.Format("2006-01-02T15:04:05.000Z"),
-		"startedAt":      startedAtUsage.Format("2006-01-02T15:04:05.000Z"),
+		"startedAt":      startedAtUsage.UTC().Format("2006-01-02T15:04:05.000Z"),
 		"endedAt":        now.Format("2006-01-02T15:04:05.000Z"),
 		"latency":        map[string]int64{"ttft": ttftMs, "total": latencyMs},
 		"tokens":         tokensMap,
@@ -374,11 +373,11 @@ func (h *ChatHandler) logUsage(ctx context.Context, info *UsageLogInfo, usage *t
 		"request":        map[string]any{"messages": reqMsgs},
 		"response":       map[string]any{"content": respContent},
 	}
-	if rec := FallbackAttemptRecorderFrom(ctx); rec != nil {
-		if attempts := rec.Snapshot(); len(attempts) > 0 {
-			detailPayload["attempts"] = attempts
-		}
+	if attempts := detailAttemptTrail(ctx, info, http.StatusOK, nil, latencyMs); len(attempts) > 0 {
+		detailPayload["attempts"] = attempts
 	}
+	detailPayload["requestId"] = middleware.GetRequestIDFromContext(ctx)
+
 	reqData, err := json.Marshal(detailPayload)
 	if err != nil {
 		log.Error("usage", "marshal request detail failed", "error", err)
