@@ -14,64 +14,29 @@ func TestIsRoutableCopilotChatModel(t *testing.T) {
 			name: "enabled chat model",
 			item: copilotCatalogItem{ID: "gpt-5", Policy: struct {
 				State string `json:"state"`
-			}{State: "enabled"}, Capabilities: struct {
-				Type     string `json:"type"`
-				Family   string `json:"family"`
-				Limits   any    `json:"limits"`
-				Supports struct {
-					Reasoning any `json:"reasoning"`
-				} `json:"supports"`
-			}{Type: "chat"}},
+			}{State: "enabled"}, Capabilities: copilotModelCapabilities{Type: "chat"}},
 			want: true,
 		},
 		{
 			name: "disabled policy state is dropped",
 			item: copilotCatalogItem{ID: "gpt-5", Policy: struct {
 				State string `json:"state"`
-			}{State: "disabled"}, Capabilities: struct {
-				Type     string `json:"type"`
-				Family   string `json:"family"`
-				Limits   any    `json:"limits"`
-				Supports struct {
-					Reasoning any `json:"reasoning"`
-				} `json:"supports"`
-			}{Type: "chat"}},
+			}{State: "disabled"}, Capabilities: copilotModelCapabilities{Type: "chat"}},
 			want: false,
 		},
 		{
 			name: "empty policy state is treated as enabled",
-			item: copilotCatalogItem{ID: "gpt-5", Capabilities: struct {
-				Type     string `json:"type"`
-				Family   string `json:"family"`
-				Limits   any    `json:"limits"`
-				Supports struct {
-					Reasoning any `json:"reasoning"`
-				} `json:"supports"`
-			}{Type: "chat"}},
+			item: copilotCatalogItem{ID: "gpt-5", Capabilities: copilotModelCapabilities{Type: "chat"}},
 			want: true,
 		},
 		{
 			name: "embeddings kind is dropped",
-			item: copilotCatalogItem{ID: "text-embed-3", Capabilities: struct {
-				Type     string `json:"type"`
-				Family   string `json:"family"`
-				Limits   any    `json:"limits"`
-				Supports struct {
-					Reasoning any `json:"reasoning"`
-				} `json:"supports"`
-			}{Type: "embeddings"}},
+			item: copilotCatalogItem{ID: "text-embed-3", Capabilities: copilotModelCapabilities{Type: "embeddings"}},
 			want: false,
 		},
 		{
 			name: "missing id and model is dropped",
-			item: copilotCatalogItem{Capabilities: struct {
-				Type     string `json:"type"`
-				Family   string `json:"family"`
-				Limits   any    `json:"limits"`
-				Supports struct {
-					Reasoning any `json:"reasoning"`
-				} `json:"supports"`
-			}{Type: "chat"}},
+			item: copilotCatalogItem{Capabilities: copilotModelCapabilities{Type: "chat"}},
 			want: false,
 		},
 	}

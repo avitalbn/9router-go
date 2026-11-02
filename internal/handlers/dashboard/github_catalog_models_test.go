@@ -26,7 +26,7 @@ func githubModelsRoute(t *testing.T, connID string, h *DashboardHandler) *httpte
 // personal-account GitHub Copilot connection:
 //   - token exchange is called with the right GitHub API headers,
 //   - the /models call lands on the endpoint returned by the exchange,
-//   - a model whose model_picker_enabled=false is filtered out,
+//   - enabled policy entries remain available even when hidden from the editor picker,
 //   - the standard {provider,connectionId,models} shape is returned with
 //     capabilities limits and supports preserved.
 func TestConnectionModels_GitHub_HappyPath(t *testing.T) {
@@ -47,7 +47,7 @@ func TestConnectionModels_GitHub_HappyPath(t *testing.T) {
 			{
 				"id": "gpt-5-mini",
 				"name": "GPT-5 Mini",
-				"model_picker_enabled": true,
+				"model_picker_enabled": false,
 				"capabilities": {
 					"type": "chat",
 					"limits": {
@@ -67,6 +67,7 @@ func TestConnectionModels_GitHub_HappyPath(t *testing.T) {
 				"id": "internal-tool",
 				"name": "Internal Only",
 				"model_picker_enabled": false,
+				"policy": {"state": "disabled"},
 				"capabilities": {"type": "chat"},
 				"supported_endpoints": ["/chat/completions"]
 			}
@@ -136,7 +137,7 @@ func TestConnectionModels_GitHub_HappyPath(t *testing.T) {
 		t.Errorf("provider=%q connectionId=%q, want github/%s", out.Provider, out.ConnectionID, connID)
 	}
 	if len(out.Models) != 1 {
-		t.Fatalf("got %d model(s), want 1 (picker-disabled filtered); body: %s", len(out.Models), rec.Body.String())
+		t.Fatalf("got %d model(s), want only the entitled chat model; body: %s", len(out.Models), rec.Body.String())
 	}
 	m := out.Models[0]
 	if m.ID != "gpt-5-mini" {
@@ -188,7 +189,7 @@ func TestConnectionModels_GitHub_BusinessEndpoint(t *testing.T) {
 	defer cleanup()
 
 	connID := "conn-gh-biz"
-	if err := repo.CreateProviderConnectionFull(connID, "github", "oauth", "GitHub Business", nil, `{"accessToken":"ghu_biz_token"}`); err != nil {
+	if err := repo.CreateProviderConnectionFull(connID, "github", "oauth", "GitHub Business", nil, `{"accessToken":"ghu_biz_token","providerSpecificData":{"copilotToken":"stale-derived-token"}}`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 

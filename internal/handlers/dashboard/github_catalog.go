@@ -32,15 +32,26 @@ import (
 
 // CopilotModel is one catalogue entry as the dashboard renders it.
 type CopilotModel struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	IsReasoning bool   `json:"isReasoning,omitempty"`
+	ID                  string                   `json:"id"`
+	Name                string                   `json:"name"`
+	IsReasoning         bool                     `json:"isReasoning,omitempty"`
+	Capabilities        copilotModelCapabilities `json:"capabilities"`
+	SupportedEndpoints  []any                    `json:"supported_endpoints,omitempty"`
+	ContextLength       int                      `json:"context_length,omitempty"`
+	MaxCompletionTokens int                      `json:"max_completion_tokens,omitempty"`
 }
 
 // isGitHubProvider reports whether providerID is a GitHub Copilot provider id
 // this catalogue handler serves.
 func isGitHubProvider(providerID string) bool {
-	return providerID == "github"
+	return providerID == "github" || providerID == "gh"
+}
+
+type copilotModelCapabilities struct {
+	Type     string         `json:"type"`
+	Family   string         `json:"family,omitempty"`
+	Limits   map[string]int `json:"limits,omitempty"`
+	Supports map[string]any `json:"supports,omitempty"`
 }
 
 // copilotCatalogItem is one entry of Copilot's /models answer. Only the fields
@@ -48,21 +59,12 @@ func isGitHubProvider(providerID string) bool {
 // failing the decode, so a catalogue schema change degrades to a longer list
 // instead of an empty one.
 type copilotCatalogItem struct {
-	ID                 string `json:"id"`
-	Name               string `json:"name"`
-	Model              string `json:"model"`
-	SupportedEndpoints []struct {
-		Endpoint string `json:"endpoint"`
-	} `json:"supported_endpoints"`
-	Capabilities struct {
-		Type     string `json:"type"`
-		Family   string `json:"family"`
-		Limits   any    `json:"limits"`
-		Supports struct {
-			Reasoning any `json:"reasoning"`
-		} `json:"supports"`
-	} `json:"capabilities"`
-	Policy struct {
+	ID                 string                   `json:"id"`
+	Name               string                   `json:"name"`
+	Model              string                   `json:"model"`
+	SupportedEndpoints []any                    `json:"supported_endpoints"`
+	Capabilities       copilotModelCapabilities `json:"capabilities"`
+	Policy             struct {
 		State string `json:"state"`
 	} `json:"policy"`
 }
@@ -91,7 +93,11 @@ func isRoutableCopilotChatModel(item copilotCatalogItem) bool {
 	}
 	// No capability block: fall back to a chat-shaped endpoint list.
 	for _, ep := range item.SupportedEndpoints {
-		if strings.Contains(strings.ToLower(ep.Endpoint), "chat") {
+		endpoint, _ := ep.(string)
+		if object, ok := ep.(map[string]any); ok {
+			endpoint, _ = object["endpoint"].(string)
+		}
+		if endpoint == "/chat/completions" || endpoint == "/responses" {
 			return true
 		}
 	}
@@ -163,10 +169,21 @@ func parseCopilotCatalog(raw []byte) []CopilotModel {
 		if name == "" {
 			name = copilotModelID(item)
 		}
+		reasoning := item.Capabilities.Family != "" || item.Capabilities.Supports["reasoning"] == true
+		switch effort := item.Capabilities.Supports["reasoning_effort"].(type) {
+		case bool:
+			reasoning = reasoning || effort
+		case []any:
+			reasoning = reasoning || len(effort) > 0
+		}
 		out = append(out, CopilotModel{
-			ID:          copilotModelID(item),
-			Name:        name,
-			IsReasoning: item.Capabilities.Family != "",
+			ID:                  copilotModelID(item),
+			Name:                name,
+			IsReasoning:         reasoning,
+			Capabilities:        item.Capabilities,
+			SupportedEndpoints:  item.SupportedEndpoints,
+			ContextLength:       item.Capabilities.Limits["max_context_window_tokens"],
+			MaxCompletionTokens: item.Capabilities.Limits["max_output_tokens"],
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
@@ -184,10 +201,49 @@ func fetchCopilotCatalogModels(ctx context.Context, data string) ([]CopilotModel
 	if token == "" {
 		return nil, errCopilotNoCredential
 	}
+	apiBase := "https://api.githubcopilot.com"
+	var conn struct {
+		AccessToken          string `json:"accessToken"`
+		ProviderSpecificData struct {
+			CopilotToken string `json:"copilotToken"`
+		} `json:"providerSpecificData"`
+	}
+	if err := json.Unmarshal([]byte(data), &conn); err != nil {
+		return nil, err
+	}
+	exchangeToken := strings.TrimSpace(conn.AccessToken)
+	if exchangeToken == "" && conn.ProviderSpecificData.CopilotToken == "" {
+		exchangeToken = token
+	}
+	if exchangeToken != "" {
+		exchangeHeaders := map[string]string{
+			"Authorization":        "Bearer " + exchangeToken,
+			"X-GitHub-Api-Version": "2022-11-28",
+			"User-Agent":           "GitHubCopilotChat/0.26.7",
+			"Accept":               "application/json",
+		}
+		status, body, err := validateProbeDo(ctx, http.MethodGet, "https://api.github.com/copilot_internal/v2/token", exchangeHeaders, nil)
+		if err == nil && status == http.StatusOK {
+			var exchanged struct {
+				Token     string `json:"token"`
+				Endpoints struct {
+					API string `json:"api"`
+				} `json:"endpoints"`
+			}
+			if json.Unmarshal(body, &exchanged) == nil {
+				if exchanged.Token != "" {
+					token = exchanged.Token
+				}
+				if exchanged.Endpoints.API != "" {
+					apiBase = strings.TrimRight(exchanged.Endpoints.API, "/")
+				}
+			}
+		}
+	}
 	headers := providers.GitHubCopilotChatHeaders("application/json", "user")
 	headers["Authorization"] = "Bearer " + token
 
-	status, body, err := validateProbeDo(ctx, http.MethodGet, "https://api.githubcopilot.com/models", headers, nil)
+	status, body, err := validateProbeDo(ctx, http.MethodGet, apiBase+"/models", headers, nil)
 	if err != nil {
 		return nil, err
 	}
