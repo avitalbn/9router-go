@@ -50,7 +50,7 @@ func isGitHubProvider(providerID string) bool {
 type copilotModelCapabilities struct {
 	Type     string         `json:"type"`
 	Family   string         `json:"family,omitempty"`
-	Limits   map[string]int `json:"limits,omitempty"`
+	Limits   map[string]any `json:"limits,omitempty"`
 	Supports map[string]any `json:"supports,omitempty"`
 }
 
@@ -176,14 +176,16 @@ func parseCopilotCatalog(raw []byte) []CopilotModel {
 		case []any:
 			reasoning = reasoning || len(effort) > 0
 		}
+		contextLength, _ := item.Capabilities.Limits["max_context_window_tokens"].(float64)
+		maxCompletionTokens, _ := item.Capabilities.Limits["max_output_tokens"].(float64)
 		out = append(out, CopilotModel{
 			ID:                  copilotModelID(item),
 			Name:                name,
 			IsReasoning:         reasoning,
 			Capabilities:        item.Capabilities,
 			SupportedEndpoints:  item.SupportedEndpoints,
-			ContextLength:       item.Capabilities.Limits["max_context_window_tokens"],
-			MaxCompletionTokens: item.Capabilities.Limits["max_output_tokens"],
+			ContextLength:       int(contextLength),
+			MaxCompletionTokens: int(maxCompletionTokens),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })

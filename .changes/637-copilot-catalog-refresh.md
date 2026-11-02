@@ -11,8 +11,9 @@ the static seed is not an entitlement guarantee.
 The upstream entitlement-aware catalog and the fork's authenticated discovery
 share one handler. Policy-disabled/non-chat entries are excluded, but an enabled
 model is not hidden merely because `model_picker_enabled` is false. Both string
-and object endpoint declarations, reasoning support, and token limits survive
-discovery. OAuth token exchange still discovers the business-account endpoint
+and object endpoint declarations, reasoning support, and heterogeneous limits
+(including nested vision constraints) survive discovery. OAuth token exchange
+still discovers the business-account endpoint
 when an older derived Copilot token is stored; direct credentials remain the
 fallback when exchange is unavailable.
 

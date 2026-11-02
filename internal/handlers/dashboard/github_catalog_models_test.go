@@ -53,7 +53,8 @@ func TestConnectionModels_GitHub_HappyPath(t *testing.T) {
 					"limits": {
 						"max_context_window_tokens": 128000,
 						"max_prompt_tokens": 120000,
-						"max_output_tokens": 16384
+						"max_output_tokens": 16384,
+						"vision": {"max_prompt_images": 5}
 					},
 					"supports": {
 						"vision": false,
