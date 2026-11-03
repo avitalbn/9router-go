@@ -160,6 +160,7 @@ func report(err error) {
 		return
 	}
 	fmt.Println(err)
+	showTrayError(err)
 }
 
 func openDashboard(port int) {

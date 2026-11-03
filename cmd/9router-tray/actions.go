@@ -114,8 +114,7 @@ func autostartEnabled() bool {
 // setAutostart installs or removes the boot entry.
 func setAutostart(on bool) error {
 	if on {
-		_, err := service.Install(nil)
-		return err
+		return installTrayAutostart()
 	}
 	_, err := service.Uninstall()
 	return err
