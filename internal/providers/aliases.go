@@ -81,6 +81,7 @@ var ProviderAliasMap = map[string]string{
 	"muse-code":         "muse",
 	"muse-subscription": "muse",
 	"systemone":         "v1m",
+	"drex":              "nace",
 	// Upstream publishes `jev` as a v1m alias, but jev-1.13-free already
 	// belongs to opencode and jev-1.13 to opencode-zen. Registering it here
 	// would let `jev/<model>` cross into v1m, which AGENTS.md §3 forbids and
@@ -139,6 +140,7 @@ var ProviderAliasMap = map[string]string{
 	"zd":       "zed",
 	"atmo":     "atmorouter",
 	"rc":       "runcrate",
+	"hc":       "hcnsec",
 }
 
 // ResolveAlias returns the canonical provider ID for an alias, or the alias itself if not found.

@@ -90,6 +90,7 @@
   import ProviderHeaderOverridesModal from './ProviderHeaderOverridesModal.svelte'
   import EditCompatibleNodeModal from './EditCompatibleNodeModal.svelte'
   import ExportKeysModal from './ExportKeysModal.svelte'
+  import ShareProviderModal from './ShareProviderModal.svelte'
   import FreebuffSessionBanner from './FreebuffSessionBanner.svelte'
   import ProviderIcon from './ProviderIcon.svelte'
 
@@ -173,6 +174,13 @@
   // need their Connect/OAuth + API Key buttons.
   let isNoAuth = $derived(selectedCatalogItem?.noAuth === true)
   let hasRiskNotice = $derived(providerId === 'antigravity' || Boolean(selectedCatalogItem?.notice?.text?.includes('RISK_NOTICE')))
+
+  // MiniMax Code lease auth: the connection borrows the desktop app's sign-in
+  // over its local broker, so there is no browser login and no stored refresh
+  // token. Only the two MiniMax Code lanes have that broker.
+  let isLeaseProvider = $derived(providerId === 'minimax-code' || providerId === 'minimax-code-global')
+  let isLeaseConnecting = $state(false)
+  let leaseError = $state('')
 
   // Free provider proxy & rotation state
   let freeProxyPoolId = $state('none')
@@ -710,6 +718,22 @@
   let showAddCustomModelModal = $state(false)
   let showEditNodeModal = $state(false)
   let showExportKeysModal = $state(false)
+  let showShareProviderModal = $state(false)
+  // Everything the Share modal can offer in a multi-provider set: the custom
+  // nodes (which carry their own endpoint) plus the registered providers this
+  // instance actually holds a connection for. A provider with no credential is
+  // not shareable — the receiver would get a row that cannot answer.
+  let shareableProviders = $derived.by(() => {
+    const withConnections = new Set(providerConnections.filter((c) => c.isActive !== 0).map((c) => c.provider))
+    const out: Array<{ id: string; name: string; isCompatible: boolean }> = []
+    for (const n of providerNodes) out.push({ id: n.id, name: n.name || n.id, isCompatible: true })
+    for (const item of PROVIDER_CATALOG) {
+      if (withConnections.has(item.id) || withConnections.has(item.alias || '')) {
+        out.push({ id: item.id, name: item.name || item.id, isCompatible: false })
+      }
+    }
+    return out
+  })
   let showHeaderOverrides = $state(false)
   // Freebuff specific state & session tracking
   let isFreebuff = $derived(
@@ -1463,6 +1487,31 @@
     onRefresh()
   }
 
+  // MiniMax Code lease: probe the desktop broker, then create a connection
+  // that borrows its sign-in. The broker's own code is shown verbatim, so an
+  // operator is told to sign in to the desktop app rather than "something
+  // went wrong".
+  async function handleLeaseConnect() {
+    isLeaseConnecting = true
+    leaseError = ''
+    try {
+      const status = await api.minimaxLeaseStatus(providerId)
+      if (!status.found) {
+        leaseError = status.message || 'Could not reach the MiniMax Code desktop app'
+        return
+      }
+      const res = await api.minimaxLeaseConnect(providerId)
+      if (!res.success) {
+        leaseError = 'Could not create the lease connection'
+        return
+      }
+      onRefresh()
+    } catch (err) {
+      leaseError = err instanceof Error ? err.message : 'Could not reach the MiniMax Code desktop app'
+    } finally {
+      isLeaseConnecting = false
+    }
+  }
   // Add Connection Button flow
   async function handleAddConnectionClick() {
     if (providerId === 'antigravity') {
@@ -3395,6 +3444,14 @@
           </button>
           <button
             type="button"
+            onclick={() => (showShareProviderModal = true)}
+            class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] bg-surface-2 hover:bg-surface-3 text-text-main border border-border h-7 px-3 text-xs rounded-[8px] w-full sm:w-auto"
+          >
+            <span class="material-symbols-outlined text-[18px]">link</span>
+            Share
+          </button>
+          <button
+            type="button"
             onclick={() => (showEditNodeModal = true)}
             class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] bg-surface-2 hover:bg-surface-3 text-text-main border border-border h-7 px-3 text-xs rounded-[8px] w-full sm:w-auto"
           >
@@ -4126,6 +4183,28 @@
           <span class="material-symbols-outlined text-[18px]">login</span>
           Connect Kiro
         </button>
+      {:else if isLeaseProvider}
+        <button
+          type="button"
+          onclick={handleAddConnectionClick}
+          class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] bg-surface-2 hover:bg-surface-3 text-text-main border border-border h-7 px-3 text-xs rounded-[8px] w-full sm:w-auto"
+        >
+          <span class="material-symbols-outlined text-[18px]">login</span>
+          Sign In
+        </button>
+        <button
+          type="button"
+          onclick={handleLeaseConnect}
+          disabled={isLeaseConnecting}
+          title="Borrow the signed-in MiniMax Code desktop app's login — no second sign-in, refresh stays with the desktop app"
+          class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] bg-brand-500 hover:bg-brand-600 text-white shadow-sm h-7 px-3 text-xs rounded-[8px] w-full sm:w-auto disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          <span class="material-symbols-outlined text-[18px]">desktop_windows</span>
+          {isLeaseConnecting ? 'Connecting...' : 'Use Desktop App'}
+        </button>
+        {#if leaseError}
+          <p class="w-full text-xs text-error break-words">{leaseError}</p>
+        {/if}
       {:else if hasDualAuthModes}
         <button
           type="button"
@@ -4161,6 +4240,14 @@
         >
           <span class="material-symbols-outlined text-[18px]">download</span>
           Export Keys
+        </button>
+        <button
+          type="button"
+          onclick={() => (showShareProviderModal = true)}
+          class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] bg-surface-2 hover:bg-surface-3 text-text-main border border-border h-7 px-3 text-xs rounded-[8px] w-full sm:w-auto"
+        >
+          <span class="material-symbols-outlined text-[18px]">link</span>
+          Share
         </button>
       {/if}
     </div>
@@ -4322,8 +4409,8 @@
               </span>
               <div class="flex-1 min-w-0">
                 <p class="text-sm font-medium truncate">{row.id}</p>
-                <div class="flex items-center gap-1 mt-1">
-                  <code class="text-xs text-text-muted font-mono bg-sidebar px-1.5 py-0.5 rounded">{displayAlias()}/{row.id}</code>
+                <div class="flex items-center gap-1 mt-1 flex-wrap">
+                  <code class="max-w-[72vw] truncate text-xs text-text-muted font-mono bg-sidebar px-1.5 py-0.5 rounded sm:max-w-[360px]">{displayAlias()}/{row.id}</code>
                   <!-- Capability icons, mirroring the registered grid's row:
                        the same model id can be imported into a compatible
                        node, and a row that shows nothing there reads as a
@@ -5392,4 +5479,14 @@
   providerId={providerId}
   providerName={providerName}
   onClose={() => (showExportKeysModal = false)}
+/>
+<ShareProviderModal
+  isOpen={showShareProviderModal}
+  providerId={providerId}
+  providerName={providerName}
+  isCompatibleNode={isCompatibleNode}
+  node={selectedNode}
+  connections={providerConnections}
+  availableProviders={shareableProviders}
+  onClose={() => (showShareProviderModal = false)}
 />

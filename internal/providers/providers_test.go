@@ -41,6 +41,19 @@ func TestKnownProviders_AuthSchemes(t *testing.T) {
 	}
 }
 
+func TestKnownProviders_AnthropicModelsFetcher(t *testing.T) {
+	cfg := ProviderRegistry["anthropic"]
+	if cfg.ModelsFetcher == nil {
+		t.Fatal("anthropic ModelsFetcher is nil")
+	}
+	if cfg.ModelsFetcher.URL != "https://api.anthropic.com/v1/models?limit=1000" {
+		t.Errorf("unexpected ModelsFetcher URL: %q", cfg.ModelsFetcher.URL)
+	}
+	if cfg.ModelsFetcher.Type != "anthropic" {
+		t.Errorf("unexpected ModelsFetcher type: %q", cfg.ModelsFetcher.Type)
+	}
+}
+
 func TestKnownProviders_PerplexityWebIsParked(t *testing.T) {
 	// Upstream 38a0c449 parks perplexity-web with serviceKinds: [] — no
 	// executor sits behind it, so it must stay out of the pickers while the
@@ -401,6 +414,26 @@ func TestNewProvidersRegistry_v061(t *testing.T) {
 		models := GetProviderModels(alias)
 		if len(models) == 0 {
 			t.Errorf("GetProviderModels(%q) returned empty list", alias)
+		}
+	}
+}
+
+func TestNewProvidersRegistry_v062(t *testing.T) {
+	// Gemini 3.8 Flash TTS and 3.8 Flash Lite TTS models must be registered under
+	// the gemini provider catalog and carry the tts service kind.
+	for _, model := range []string{"gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"} {
+		found := false
+		for _, m := range GetProviderModels("gemini") {
+			if m == model {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("GetProviderModels(gemini) missing %s", model)
+		}
+		if got := GetProviderModelKind("gemini", model); got != "tts" {
+			t.Errorf("GetProviderModelKind(gemini, %q) = %q, want tts", model, got)
 		}
 	}
 }

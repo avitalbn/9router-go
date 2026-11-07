@@ -532,6 +532,11 @@ func (h *ChatHandler) applyComboStrategy(strategy string, models []string, combo
 		}
 
 		return rotated
+	case "cascade":
+		// Escalation is the combo loop's own failure path; cascade's job is
+		// only to start that walk at the cheapest member. See
+		// OrderModelsByCascade.
+		return OrderModelsByCascade(models)
 	case "capacity":
 		fallthrough
 	default:
@@ -711,20 +716,25 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 	// combo models must not re-select them (same account = same 429 quota).
 	var excludeIDs []string
 
+	var settings, _ = h.Repo.GetSettings()
+
 	// 1. Apply combo rotation strategy first. The smart strategy orders the
 	// models itself (System One evaluation + session stickiness) and carries
 	// its routing state on the context for the failure loop below.
 	//
 	// RespectStoredOrder skips the rotation and walks the stored list as-is,
 	// so the order the operator arranged in the editor is the fallback chain.
-	// The smart and tokenmaxxing strategies are exempt: they compute dynamic
-	// ranking (by task suitability and quota allowance respectively), so honoring
-	// stored order would defeat the evaluation they exist to perform.
+	// The smart, tokenmaxxing, and cascade strategies are exempt: they compute
+	// dynamic ranking (by task suitability, quota allowance, and unit price
+	// respectively), so honoring stored order would defeat the evaluation they
+	// exist to perform.
 	var models []string
 	if strategy == "smart" {
 		ctx, models = h.applySmartRouting(ctx, body, comboModels, comboName)
 	} else if strategy == "tokenmaxxing" {
 		models = h.applyTokenmaxxingRouting(ctx, comboModels)
+	} else if strategy == "cascade" {
+		models = OrderModelsByCascade(comboModels)
 	} else if h.comboRespectsStoredOrder(comboName) {
 		models = slices.Clone(comboModels)
 	} else {
@@ -791,15 +801,27 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 				continue
 			}
 
+			candidateCtx := ctx
+			var seatBudgetMs int
+			if settings != nil {
+				seatBudgetMs = settings.SeatAttemptBudgetMs
+				if settings.ProviderOverrides != nil {
+					if ov, ok := settings.ProviderOverrides[modelInfo.Provider]; ok && ov.SeatBudgetMs > 0 {
+						seatBudgetMs = ov.SeatBudgetMs
+					}
+				}
+			}
+			if seatBudgetMs > 0 {
+				candidateCtx = internalproxy.WithSeatBudget(candidateCtx, seatBudgetMs)
+			}
+			candidateWriter := http.ResponseWriter(cw)
 			// The candidate tried last keeps the global deadline: the response
 			// timeout only advances a combo, it never makes one fail sooner
 			// than it would without the setting (#744). "Last" is the last
 			// member that can still be dispatched, not the last index (#776).
-			candidateCtx := ctx
-			candidateWriter := http.ResponseWriter(cw)
 			var timeoutGate *comboResponseTimeout
 			if responseTimeout > 0 && !isLastModel {
-				timeoutGate = newComboResponseTimeout(ctx, cw, responseTimeout)
+				timeoutGate = newComboResponseTimeout(candidateCtx, cw, responseTimeout)
 				defer timeoutGate.finish()
 				candidateCtx, candidateWriter = timeoutGate.ctx, timeoutGate
 			}
@@ -986,6 +1008,13 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 							lastErr = ue
 							break
 						}
+						// A model-level fault that is not a permanent
+						// deprecation (404, model-scoped 429, or gateway
+						// fault 500-504) earns a transient cooldown badge.
+						// One cooldown per business request per model —
+						// deduped by the TTL cache inside
+						// recordModelCooldown.
+						h.recordModelCooldown(ctx, modelInfo.Provider, modelInfo.Model, connID, ue)
 						// A prompt that does not fit this model fails the same
 						// way on every connection to it, so advancing to the
 						// next combo member is the only move that can succeed
@@ -1164,11 +1193,13 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 	// combo models must not re-select them (same account = same 429 quota).
 	var excludeIDs []string
 	var models []string
-	// smart and tokenmaxxing compute dynamic rankings and override stored order.
+	// smart, tokenmaxxing, and cascade compute dynamic rankings and override stored order.
 	if strategy == "smart" {
 		ctx, models = h.applySmartRouting(ctx, bodyJSON, comboModels, comboName)
 	} else if strategy == "tokenmaxxing" {
 		models = h.applyTokenmaxxingRouting(ctx, comboModels)
+	} else if strategy == "cascade" {
+		models = OrderModelsByCascade(comboModels)
 	} else if h.comboRespectsStoredOrder(comboName) {
 		models = slices.Clone(comboModels)
 	} else {
@@ -1390,6 +1421,13 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 							lastErr = ue
 							break
 						}
+						// A model-level fault that is not a permanent
+						// deprecation (404, model-scoped 429, or gateway
+						// fault 500-504) earns a transient cooldown badge.
+						// One cooldown per business request per model —
+						// deduped by the TTL cache inside
+						// recordModelCooldown.
+						h.recordModelCooldown(ctx, modelInfo.Provider, modelInfo.Model, connID, ue)
 						// A prompt that does not fit this model fails the same
 						// way on every connection to it, so advancing to the
 						// next combo member is the only move that can succeed

@@ -251,7 +251,9 @@ func TestForwardGithubResponsesFallback_NonStream(t *testing.T) {
 // different 400 that obscures the real error (#1062 parity).
 func TestForwardGithubClaudeNotEscalated(t *testing.T) {
 	var responsesHit bool
+	var gotPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
 		if r.URL.Path == "/responses" {
 			responsesHit = true
 			w.WriteHeader(http.StatusOK)
@@ -263,7 +265,7 @@ func TestForwardGithubClaudeNotEscalated(t *testing.T) {
 	defer server.Close()
 
 	rec := httptest.NewRecorder()
-	cfg := &providers.ProviderConfig{BaseURL: server.URL}
+	cfg := &providers.ProviderConfig{BaseURL: server.URL, NoAuth: true}
 	req := &Request{
 		Ctx:       t.Context(),
 		Client:    server.Client(),
@@ -285,6 +287,9 @@ func TestForwardGithubClaudeNotEscalated(t *testing.T) {
 	}
 	if responsesHit {
 		t.Error("Claude model was escalated to /responses, violating provider isolation")
+	}
+	if gotPath != copilotMessagesPath {
+		t.Errorf("Claude path = %q, want %q", gotPath, copilotMessagesPath)
 	}
 }
 

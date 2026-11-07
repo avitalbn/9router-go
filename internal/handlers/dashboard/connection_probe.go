@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
@@ -59,6 +60,11 @@ const (
 	// the provider's chat base URL).
 	v1mProbeURL   = "https://v1m.ir/v1/systemone"
 	v1mProbeModel = "rev-latest"
+	// Nace Drex answers the same System One shape on its own host. The
+	// cheapest call that proves a key is a single-token noul evaluation,
+	// exactly as v1m (upstream v0.5.112, f7f6f5e).
+	naceProbeURL   = "https://console.nace.ai/v1/systemone"
+	naceProbeModel = "drex-max"
 	// MiniMax Code publishes its model catalogue on the agent gateway (the
 	// same endpoint the dashboard imports from), so a connection probe is a
 	// plain bearer call there: a 401/403 is the only invalid answer.
@@ -90,6 +96,7 @@ type connectionProbeData struct {
 	ConnectionProxyEnabled bool           `json:"connectionProxyEnabled"`
 	ConnectionProxyURL     string         `json:"connectionProxyUrl"`
 	ConnectionNoProxy      string         `json:"connectionNoProxy"`
+	AllowPrivateNetworking bool           `json:"allowPrivateNetworking"`
 }
 
 // probeOutcome is one connection-test result. valid=false + message mirrors
@@ -238,10 +245,10 @@ var oauthProbeConfigs = map[string]oauthProbeConfig{
 	"codebuddy-intl": {tokenExists: true},
 	// The stored credential only authorizes the account API; model access
 	// needs a minted LLM token, so the test walks both layers (probeZed).
-	"windsurf":       {tokenExists: true},
-	"trae":           {tokenExists: true},
-	"devin":          {tokenExists: true},
-	"devin-cli":      {tokenExists: true},
+	"windsurf":  {tokenExists: true},
+	"trae":      {tokenExists: true},
+	"devin":     {tokenExists: true},
+	"devin-cli": {tokenExists: true},
 	"kimchi": {
 		url: kimchiProbeURL, method: http.MethodGet,
 		authHeader: "Authorization", authPrefix: "Bearer ",
@@ -342,6 +349,9 @@ func parseConnectionProbeData(raw map[string]any) connectionProbeData {
 func (h *DashboardHandler) testSingleConnection(ctx context.Context, conn *models.ProviderConnection, data connectionProbeData, raw map[string]any) probeOutcome {
 	if conn != nil && providers.IsLocalByDesign(conn.Provider) {
 		ctx = proxy.WithAllowLoopback(ctx)
+	}
+	if data.AllowPrivateNetworking {
+		ctx = proxy.WithAllowPrivateNetworking(ctx)
 	}
 	client, proxyURL := h.probeHTTPClient(data, raw)
 	if proxyURL != "" {
@@ -883,7 +893,7 @@ func classifyOAuthProbe(status int, cfg oauthProbeConfig) oauthProbeAttempt {
 func probeCloudCodeAssist(ctx context.Context, client *http.Client, provider, accessToken string) oauthProbeAttempt {
 	userAgent := "google-api-nodejs-client/9.15.1 gemini-cli/0.34.0"
 	if provider == "antigravity" {
-		userAgent = "google-api-nodejs-client/9.15.1 vscode-antigravity/1.107.0"
+		userAgent = providers.AntigravityCLIUserAgent
 	}
 	status, body, err := connectionProbeDo(ctx, client, http.MethodPost, cloudCodeAssistProbeURL, map[string]string{
 		"Authorization": "Bearer " + accessToken,
@@ -982,6 +992,9 @@ func (h *DashboardHandler) persistProbeResult(conn *models.ProviderConnection, r
 		} else {
 			raw["lastError"] = nil
 			raw["lastErrorAt"] = nil
+		}
+		if conn != nil && conn.Provider == "codex" {
+			chat.ClearCodexQuotaBlock(conn.ID)
 		}
 	} else if out.message == "Provider test not supported" {
 		// Do not mark connection as broken in DB when probe is unsupported

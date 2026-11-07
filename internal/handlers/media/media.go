@@ -123,6 +123,14 @@ func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) 
 	embeddingsURL := buildEmbeddingsURL(providerCfg.BaseURL)
 	finalBody := handlerutil.UpdateModelInBody(body, modelInfo.Model)
 
+	// Google Gemini embeddings forward dimensions as outputDimensionality (upstream #1366).
+	if providers.ResolveAlias(modelInfo.Provider) == "gemini" {
+		finalBody = forwardGeminiEmbeddingDimensions(finalBody)
+	}
+
+	if isGitHubCopilotProvider(modelInfo.Provider) {
+		finalBody = wrapCopilotEmbeddingInput(finalBody)
+	}
 	req, err := http.NewRequestWithContext(r.Context(), "POST", embeddingsURL, strings.NewReader(string(finalBody)))
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create request: %v", err))
@@ -724,6 +732,40 @@ func (h *MediaHandler) HandleVideoGet(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// defaultWebSearchModel returns "search-combo" if available, then any webSearch combo, then falls back to tavily/search.
+func (h *MediaHandler) defaultWebSearchModel() string {
+	if h.Repo != nil {
+		if combo, err := h.Repo.GetComboByName("search-combo"); err == nil && combo != nil && combo.Models != "" {
+			return "search-combo"
+		}
+		if combos, err := h.Repo.GetCombos(); err == nil {
+			for _, c := range combos {
+				if c != nil && c.Kind != nil && *c.Kind == "webSearch" && c.Models != "" {
+					return c.Name
+				}
+			}
+		}
+	}
+	return "gpt-4o"
+}
+
+// defaultWebFetchModel returns "fetch-combo" if available, then any webFetch combo, then falls back to jina-reader.
+func (h *MediaHandler) defaultWebFetchModel() string {
+	if h.Repo != nil {
+		if combo, err := h.Repo.GetComboByName("fetch-combo"); err == nil && combo != nil && combo.Models != "" {
+			return "fetch-combo"
+		}
+		if combos, err := h.Repo.GetCombos(); err == nil {
+			for _, c := range combos {
+				if c != nil && c.Kind != nil && *c.Kind == "webFetch" && c.Models != "" {
+					return c.Name
+				}
+			}
+		}
+	}
+	return "jina-reader"
+}
+
 // HandleSearch handles /v1/search.
 func (h *MediaHandler) HandleSearch(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
@@ -732,7 +774,7 @@ func (h *MediaHandler) HandleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer r.Body.Close()
-	h.forwardMediaRequest(w, r, body, "gpt-4o", "/v1/search")
+	h.forwardMediaRequest(w, r, body, h.defaultWebSearchModel(), "/v1/search")
 }
 
 // HandleScrape handles /v1/scrape.
@@ -743,7 +785,7 @@ func (h *MediaHandler) HandleScrape(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer r.Body.Close()
-	h.forwardMediaRequest(w, r, body, "gpt-4o", "/v1/scrape")
+	h.forwardMediaRequest(w, r, body, h.defaultWebFetchModel(), "/v1/scrape")
 }
 
 // HandleWebFetch handles /v1/web/fetch.
@@ -790,7 +832,7 @@ func (h *MediaHandler) HandleWebFetch(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	h.forwardMediaRequest(w, r, body, "jina-reader", "/v1/web/fetch")
+	h.forwardMediaRequest(w, r, body, h.defaultWebFetchModel(), "/v1/web/fetch")
 }
 
 // targetPrivate reports whether host names an address the gateway must not
@@ -853,6 +895,12 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 				}
 			}
 		}
+	}
+	if (endpoint == "/v1/search" || endpoint == "/v1/scrape") && (model == "search" || model == "default" || model == "web" || model == "webSearch") {
+		model = h.defaultWebSearchModel()
+	}
+	if endpoint == "/v1/web/fetch" && (model == "fetch" || model == "default" || model == "web" || model == "webFetch") {
+		model = h.defaultWebFetchModel()
 	}
 	// Per-API-key access control. This is the single funnel for images, TTS,
 	// STT, video, search, scrape and fetch, so gating here covers all of them
@@ -936,6 +984,18 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 					continue
 				}
 			}
+			// Cloudflare AI image models answer /ai/run/<model>, which the
+			// generic forwarder cannot reach — dedicated lane for all of them.
+			if (endpoint == "/v1/images/generations" || endpoint == "/images/generations" ||
+				endpoint == "/v1/images/edits" || endpoint == "/images/edits") && isCloudflareImageModel(subInfo) {
+				if err := h.handleCloudflareImage(w, r, body, subInfo); err == nil {
+					return
+				} else {
+					lastErr = err.Error()
+					continue
+				}
+			}
+
 			if (endpoint == "/v1/audio/transcriptions" || endpoint == "/audio/transcriptions") && (subInfo.Provider == "antigravity" || subInfo.Provider == "ag") {
 				if err := h.handleAntigravitySTT(w, r, body, subInfo); err == nil {
 					return
@@ -984,6 +1044,9 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			}
 
 			finalBody := handlerutil.UpdateModelInBody(body, subInfo.Model)
+			// Cloudflare AI's flux-1-schnell schema rejects width/height — handled
+			// by the cloudflare image lane, not here.
+
 			// The endpoint the caller used is a route on this gateway, not a
 			// path on the vendor's host: appending it to BaseURL built URLs the
 			// vendor never serves (tavily got api.tavily.com/search/v1/search,
@@ -1068,7 +1131,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 				lastStatus = resp.StatusCode
 				continue
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			copyUpstreamHeaders(w.Header(), resp.Header)
 			w.WriteHeader(resp.StatusCode)
 			io.Copy(w, resp.Body)
@@ -1117,6 +1180,15 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Cloudflare AI image models answer /ai/run/<model>, which the generic
+	// forwarder cannot reach — dedicated lane for all of them.
+	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations" ||
+		endpoint == "/v1/images/edits" || endpoint == "/images/edits") && isCloudflareImageModel(modelInfo) {
+		if err := h.handleCloudflareImage(w, r, body, modelInfo); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, err.Error())
+		}
+		return
+	}
 	// UC web: the persona image API needs a minted Clerk session, not a bearer
 	// key, so the generic forward cannot reach it.
 	if (endpoint == "/v1/images/generations" || endpoint == "/images/generations" ||
@@ -1343,6 +1415,14 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	method := r.Method
+	if endpoint == "/v1/search" && providerCfg.SearchURL != "" && !hasCustomBaseURL {
+		targetURL = providerCfg.SearchURL
+		if providerCfg.SearchMethod != "" {
+			method = strings.ToUpper(providerCfg.SearchMethod)
+		} else {
+			method = http.MethodPost
+		}
+	}
 	if endpoint == "/v1/web/fetch" && providerCfg.FetchURL != "" {
 		targetURL = providerCfg.FetchURL
 		if providerCfg.FetchMethod != "" {
@@ -1417,7 +1497,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	io.Copy(w, resp.Body)
 
 	if resp.StatusCode == http.StatusOK && conn != nil {
-		h.Repo.UpdateConnectionLastUsed(conn.ID)
+		_ = h.Repo.UpdateConnectionLastUsed(conn.ID)
 		latencyMs := time.Since(start).Milliseconds()
 		logInfo := &shared.UsageLogInfo{
 			Provider:     modelInfo.Provider,
@@ -1525,4 +1605,62 @@ func buildSystemoneURL(override, cfgURL, cfgPath string) string {
 		return base + path[len(prefix):]
 	}
 	return base + path
+}
+
+// forwardGeminiEmbeddingDimensions maps incoming OpenAI "dimensions" to
+// Google Gemini's "outputDimensionality" property (upstream decolua/9router#1366 parity).
+func forwardGeminiEmbeddingDimensions(body []byte) []byte {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return body
+	}
+	dimsRaw, exists := payload["dimensions"]
+	if !exists || dimsRaw == nil {
+		return body
+	}
+	dims := 0
+	switch v := dimsRaw.(type) {
+	case float64:
+		dims = int(v)
+	case int:
+		dims = v
+	case int64:
+		dims = int(v)
+	}
+	if dims <= 0 {
+		return body
+	}
+	payload["outputDimensionality"] = dims
+	if updated, err := json.Marshal(payload); err == nil {
+		return updated
+	}
+	return body
+}
+
+// isGitHubCopilotProvider reports whether the resolved provider is GitHub Copilot.
+func isGitHubCopilotProvider(provider string) bool {
+	return providers.ResolveAlias(provider) == "github"
+}
+
+// wrapCopilotEmbeddingInput wraps a bare "input" string into an array of
+// strings ([input]), which Copilot requires. It leaves an existing array
+// untouched and leaves bodies without "input" alone.
+func wrapCopilotEmbeddingInput(body []byte) []byte {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil || payload == nil {
+		return body
+	}
+	input, ok := payload["input"]
+	if !ok {
+		return body
+	}
+	if _, isArray := input.([]any); isArray {
+		return body
+	}
+	payload["input"] = []any{input}
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return out
 }

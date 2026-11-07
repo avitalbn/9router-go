@@ -11,7 +11,9 @@ import (
 
 	"9router/proxy/internal/constants"
 	"9router/proxy/internal/guardrails"
+	"9router/proxy/internal/jsonfence"
 	"9router/proxy/internal/log"
+	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/shutdown"
 	"9router/proxy/internal/translator"
@@ -107,6 +109,62 @@ func renameMaxTokensBody(body []byte) []byte {
 	return out
 }
 
+// volcengineArkGLM5OutputCeiling is Volcengine Ark's output-token ceiling for
+// GLM-5 models. Ark answers HTTP 400 for a GLM-5 request that asks for more
+// than this, so a client budget above it is folded down before dispatch.
+const volcengineArkGLM5OutputCeiling = 4096
+
+// clampVolcengineArkGLM5OutputTokens folds a GLM-5 output budget above the
+// Ark ceiling down to the model's capability ceiling (capped at Ark's 4096).
+// A budget at or below the ceiling, a request that sets no budget, and every
+// non-GLM-5 model are left byte-identical. All three output-budget spellings
+// are clamped: max_tokens, max_completion_tokens and max_output_tokens.
+func clampVolcengineArkGLM5OutputTokens(provider string, body []byte) []byte {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	model, _ := m["model"].(string)
+	if !isVolcengineArkGLM5Model(model) {
+		return body
+	}
+	// Ark's GLM-5 output ceiling, further bounded by the model's declared
+	// maxOutput from the capability registry when one is specified.
+	maxOutputCap := volcengineArkGLM5OutputCeiling
+	if maxOutput := providers.GetCapabilitiesForModel(provider, model).MaxOutput; maxOutput > 0 && maxOutput < maxOutputCap {
+		maxOutputCap = maxOutput
+	}
+	changed := false
+	for _, field := range []string{"max_tokens", "max_completion_tokens", "max_output_tokens"} {
+		v, ok := m[field]
+		if !ok {
+			continue
+		}
+		n, ok := outputBudgetOf(v)
+		if !ok || n <= int64(maxOutputCap) {
+			continue
+		}
+		m[field] = maxOutputCap
+		changed = true
+	}
+	if !changed {
+		return body
+	}
+	out, err := marshalStable(m)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// isVolcengineArkGLM5Model reports whether a model id is a GLM-5 model whose
+// output is capped at the Ark ceiling: any model id containing 'glm-5'
+// (case-insensitive), e.g. bare glm-5*, GLM-5.1, glm-5-turbo,
+// zai-org/GLM-5.2, or a Doubao-family id carrying the glm-5 qualifier.
+func isVolcengineArkGLM5Model(model string) bool {
+	return strings.Contains(strings.ToLower(model), "glm-5")
+}
+
 // DowngradeJsonSchemaToJSONObject downgrades response_format from "json_schema"
 // to {"type":"json_object"} for providers like DeepSeek or openai-compatible nodes
 // that do not support OpenAI Structured Outputs (upstream decolua/9router PR #5304).
@@ -134,6 +192,89 @@ func DowngradeJsonSchemaToJSONObject(body []byte) []byte {
 	}
 	return body
 }
+// normalizeGroqGPTOSSRequest patches a Groq gpt-oss request so strict JSON
+// validation survives the model's Harmony reasoning channel. Groq answers
+// 400 json_validate_failed ("Failed to validate JSON") when a structured
+// response_format rides next to a raw/unparsed reasoning stream that leaks
+// analysis-channel text into the content. Pinning reasoning_format to
+// "parsed" moves the chain-of-thought into message.reasoning and leaves the
+// JSON payload clean. A client-supplied reasoning_format is respected.
+// Non-gpt-oss Groq models and non-JSON requests are left byte-identical.
+//
+// It also clamps reasoning_effort to Groq's enum for gpt-oss
+// (low|medium|high, probed live 2026-11-07: minimal/xhigh/auto/none/max all
+// answer 400). Out-of-range levels coming from the unified thinking pass
+// (the capability table advertises minimal..xhigh for gpt-oss) are folded to
+// the nearest valid level by rank; a valid level or an absent effort is
+// left untouched. This clamp runs on every gpt-oss request, not only JSON
+// ones, because the 400 is unrelated to response_format.
+func normalizeGroqGPTOSSRequest(body []byte) []byte {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	model, _ := m["model"].(string)
+	if !isGroqGPTOSSModel(model) {
+		return body
+	}
+	changed := false
+	if clamped, ok := clampGroqReasoningEffort(m["reasoning_effort"]); ok {
+		m["reasoning_effort"] = clamped
+		changed = true
+	}
+	if rf, ok := m["response_format"]; ok {
+		if rfMap, ok := rf.(map[string]any); ok {
+			if rfType, _ := rfMap["type"].(string); rfType == "json_object" || rfType == "json_schema" {
+				if _, exists := m["reasoning_format"]; !exists {
+					m["reasoning_format"] = "parsed"
+					changed = true
+				}
+			}
+		}
+	}
+	if !changed {
+		return body
+	}
+	if out, err := marshalStable(m); err == nil {
+		return out
+	}
+	return body
+}
+
+// clampGroqReasoningEffort folds a reasoning_effort outside Groq's
+// gpt-oss enum (low|medium|high) to the nearest valid level by rank.
+// Ranking follows the unified effort vocabulary (none < minimal < low <
+// medium < high < xhigh < max): anything at or below low becomes low,
+// anything at or above high becomes high, anything else (auto, unknown,
+// non-string) becomes medium. (clamped, true) when the wire value must
+// change; a valid level or an absent effort returns ("", false).
+func clampGroqReasoningEffort(v any) (string, bool) {
+	s, ok := v.(string)
+	if !ok {
+		if v == nil {
+			return "", false
+		}
+		return "medium", true
+	}
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "low", "medium", "high":
+		return "", false
+	case "", "none", "minimal", "default":
+		return "low", true
+	case "xhigh", "max", "ultra":
+		return "high", true
+	}
+	return "medium", true
+}
+
+// isGroqGPTOSSModel reports whether a Groq wire model id is a gpt-oss
+// Harmony model (openai/gpt-oss-120b, openai/gpt-oss-20b) whose reasoning
+// stream must be parsed for structured outputs to validate.
+func isGroqGPTOSSModel(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	return strings.Contains(lower, "gpt-oss")
+}
+
 
 // ForwardOpenAI sends an OpenAI-format request and writes the response.
 func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
@@ -149,6 +290,16 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 	}
 	if req.Provider == "deepseek" {
 		req.Body = DowngradeJsonSchemaToJSONObject(req.Body)
+	}
+	if req.Provider == "groq" {
+		req.Body = normalizeGroqGPTOSSRequest(req.Body)
+	}
+	if req.Provider == "volcengine-ark" {
+		// Volcengine Ark answers HTTP 400 when a GLM-5 model is asked for more
+		// than its output-token ceiling, so a client budget above it is folded
+		// down before the request leaves the upstream. The ceiling is the model's
+		// declared maxOutput from the capability registry, capped at Ark's 4096.
+		req.Body = clampVolcengineArkGLM5OutputTokens(req.Provider, req.Body)
 	}
 	resp, err := proxy.ForwardOpenAI(req.Ctx, req.Client, req.Config, req.APIKey, req.Body, req.IsStream)
 	if err != nil {
@@ -353,6 +504,10 @@ func sseStream(o sseStreamOpts) error {
 		if liftAliases {
 			patchers = append(patchers, liftReasoningAliasesPayload)
 		}
+		// One stateful decoder per stream: visible Composer text can span chunks and
+		// the  closing tag can be split across chunk boundaries.
+		composerDecoder := &composerThinkingDecoder{}
+		patchers = append(patchers, composerDecoder.Process)
 		return proxy.SSECopy(hw, upstream, flusher, func(chunk []byte) {
 			if ttft != nil && *ttft == 0 {
 				*ttft = time.Since(startTime).Milliseconds()
@@ -489,6 +644,13 @@ func jsonResponse(ctx context.Context, w http.ResponseWriter, upstream io.Reader
 		return guardrailBlockFailure(gerr)
 	}
 	body = filtered
+	// A model asked for machine-readable JSON may still answer with a ```json
+	// fence. Unwrap it here — after the guardrail has seen the model's own
+	// words, before either write path hands bytes to the client — so the
+	// unwrapped body is what the log buffer and both the OpenAI and Claude
+	// write paths send. Only a body whose contents parse as JSON is unwrapped,
+	// and only for a request that asked for JSON.
+	body = jsonfence.ApplyContents(ctx, body)
 
 	if buf != nil {
 		buf.Write(body)

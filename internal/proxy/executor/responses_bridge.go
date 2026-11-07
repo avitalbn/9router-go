@@ -41,6 +41,9 @@ func UpstreamSpeaksResponses(provider, model string, cfg *providers.ProviderConf
 		return true
 	}
 	switch provider {
+	case "github", "ghe-copilot", "gh":
+		_, known := githubResponsesModels.Load(copilotModelSlug(model))
+		return known || IsCopilotResponsesModel("github", model)
 	case "opencode", "opencode-go":
 		formats, declared := providers.GetModelFormats(provider, model)
 		if !declared {
@@ -56,14 +59,6 @@ func UpstreamSpeaksResponses(provider, model string, cfg *providers.ProviderConf
 		// family fallback the executor applies.
 		formats, declared := providers.GetModelFormats(provider, cleanResponsesModel(model))
 		return declared && formats.TargetFormat == providers.FormatOpenAIResponses
-	case "github", "gh":
-		// GitHub Copilot GPT models that only work on /responses are tracked in
-		// the runtime cache githubResponsesModels (populated by ForwardGithub on
-		// first discovery and pre-warmed for confirmed Responses-only models at
-		// init). A /v1/responses client for a cached model is relayed untouched;
-		// a Chat client goes through the standard conversion in forwardGithubResponses.
-		_, known := githubResponsesModels.Load(model)
-		return known
 	case "muse":
 		// Meta's Model API serves both lanes on one key, and every Muse Spark
 		// model pins the Responses one, so a /v1/responses client is relayed
@@ -293,11 +288,32 @@ func responsesWriter(o sseStreamOpts, hw *proxy.HeartbeatWriter, flusher http.Fl
 	}
 }
 
-// passthroughResponses relays an upstream Responses body untouched to a client
-// that already speaks Responses. Translating it would be a round trip through
+// stripClientMetadata removes the client_metadata an upstream echoes back in a
+// Responses API response body, so client-supplied data never rides the passthrough
+// relay back to the caller. A body that does not parse as an object, or that
+// carries no client_metadata, is returned untouched.
+func stripClientMetadata(body []byte) []byte {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	if _, ok := m["client_metadata"]; !ok {
+		return body
+	}
+	delete(m, "client_metadata")
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// passthroughResponses relays an upstream Responses body to a client that
+// already speaks Responses. Translating it would be a round trip through
 // Chat Completions that loses exactly the fields the native endpoint needs —
 // previous_response_id, reasoning item ids, store — so the body is copied
-// byte for byte instead.
+// byte for byte except for client_metadata, which the upstream echoes back and
+// the caller never needs to see again.
 func passthroughResponses(w http.ResponseWriter, req *Request, upstream io.Reader) error {
 	// Relaying "byte for byte" means byte for byte *except* the tool names this
 	// request had to have fitted for the upstream's 64-char limit. Forwarding
@@ -325,6 +341,7 @@ func passthroughResponses(w http.ResponseWriter, req *Request, upstream io.Reade
 	if len(req.ToolNameMap) > 0 {
 		body = translator.RestoreToolNames(body, req.ToolNameMap)
 	}
+	body = stripClientMetadata(body)
 	if req.ResponseBuf != nil {
 		req.ResponseBuf.Write(body)
 	}

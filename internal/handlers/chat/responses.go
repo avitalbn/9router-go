@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/jsonfence"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/middleware"
 	internalproxy "9router/proxy/internal/proxy"
@@ -109,6 +110,11 @@ func (h *ChatHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := thinking.WithSuffixIntent(h.newResponsesContext(r, modelName, modelInfo, &body), suffixIntent)
+	// X-9Router-Token-Saver: off|0|false|bypass opts the whole request out of
+	// every token saver; the flag travels on ctx to applyTokenSavers.
+	if isTokenSaverBypassValue(r.Header.Get("X-9Router-Token-Saver")) {
+		ctx = WithTokenSaverBypass(ctx)
+	}
 	// The operator's providerThinking overrides are read once here, not once
 	// per connection attempt.
 	ctx = h.withProviderThinkingModes(ctx)
@@ -132,6 +138,21 @@ func (h *ChatHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 		}
 		if !bytes.Contains(body, []byte(";base64,")) {
 			ctx = translator.WithPromptEstimate(ctx, (len(body)+3)/4)
+		}
+	}
+
+	// The caller's key may carry a context ceiling below the model's own
+	// window. It is applied here, once, so every attempt — single model, combo
+	// member, fusion leg — is trimmed by the same rule.
+	if limit := keyContextLimit(ctx); limit > 0 {
+		modelWindow, modelMaxOutput := modelContextLimits(modelInfo.Provider, modelInfo.Model)
+		trimmed, limitErr := applyKeyContextLimitMap(workingBody, limit, modelWindow, modelMaxOutput)
+		if limitErr != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, limitErr.Error())
+			return
+		}
+		if trimmed != nil {
+			workingBody = trimmed
 		}
 	}
 
@@ -186,6 +207,12 @@ func (h *ChatHandler) newResponsesContext(r *http.Request, requestedModel string
 	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(requestedModel))
 	// The dispatching key decides which guardrail policy governs the response.
 	ctx = withGuardrailKey(ctx, requestKeyID(r))
+	// A Responses client can ask for structured output too; the flag has to be
+	// on the context before the answer is written, and this is where the
+	// request's own body is still in hand.
+	if jsonfence.Wants(*body) {
+		ctx = jsonfence.With(ctx)
+	}
 
 	providerCfg, err := h.getProviderConfig(modelInfo.Provider, nil)
 	if err == nil && executor.UpstreamSpeaksResponses(modelInfo.Provider, modelInfo.Model, providerCfg) {

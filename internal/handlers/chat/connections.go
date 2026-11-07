@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -719,6 +720,28 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 		}
 	}
 
+	// Upstream parity: resolve {accountId} in the transport baseUrl from the
+	// connection's providerSpecificData.accountId, with CLOUDFLARE_ACCOUNT_ID
+	// as a legacy fallback (open-sse/executors/default.js:181).
+	if baseCfg != nil && strings.Contains(baseCfg.BaseURL, "{accountId}") {
+		accountID := ""
+		if connData != nil {
+			if aid, ok := connData.ProviderSpecificData["accountId"].(string); ok && aid != "" {
+				accountID = aid
+			}
+		}
+		if accountID == "" {
+			accountID = os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+		}
+		if accountID == "" {
+			// Return nil config with a specific error, matching upstream's
+			// `${provider} requires accountId in providerSpecificData`.
+			// The caller in chat.go reads cfg == nil and produces the user-visible message.
+			return nil, fmt.Errorf("cloudflare-ai requires accountId in providerSpecificData (the Account ID field in the dashboard or CLOUDFLARE_ACCOUNT_ID env var)")
+		}
+		baseCfg.BaseURL = strings.Replace(baseCfg.BaseURL, "{accountId}", accountID, 1)
+	}
+
 	if baseCfg == nil {
 		return nil, fmt.Errorf("provider %q has no baseUrl in connection data and is not in KnownProviders", provider)
 	}
@@ -756,6 +779,25 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 		}
 	}
 
+	// Stamp the pool this connection routed through onto the config, so
+	// resilienceProxyKey reads it back and the breaker and semaphore key on
+	// provider+pool rather than on the provider alone.
+	//
+	// Without this the egress component was always "direct": nothing in the
+	// production path recorded the pool, only tests fabricated it, so one dead
+	// pool still opened the provider's single breaker and took every other
+	// egress with it.
+	//
+	// This is a field on ProviderConfig rather than a HeaderOverrides entry,
+	// which is where it used to be expected to live: that map is applied to the
+	// outbound request (internal/proxy/openai.go), so an internal key written
+	// there is sent to every upstream provider. It follows RelayURL — a
+	// gateway-internal value the executors read, never one they forward.
+	if connData != nil && connData.ProxyPoolID != "" {
+		cloned := *baseCfg
+		cloned.ProxyPoolID = connData.ProxyPoolID
+		baseCfg = &cloned
+	}
 	return h.applyProviderOverrides(provider, h.withClineIdentity(provider, baseCfg)), nil
 }
 

@@ -114,7 +114,7 @@ func resolveProviderAlias(alias string) string {
 // If the entry has no "/" (i.e. it's a combo name), it resolves the combo
 // and returns its first concrete model with the combined model list.
 func (h *ChatHandler) resolveModelEntry(entry string) *ModelInfo {
-	return h.resolveModelEntryGuarded(entry, nil)
+	return h.resolveModelEntryGuarded(entry, nil, nil)
 }
 
 // resolveModelEntryGuarded is resolveModelEntry with the set of combo names
@@ -122,7 +122,7 @@ func (h *ChatHandler) resolveModelEntry(entry string) *ModelInfo {
 // through another combo) otherwise re-enters the branch below forever and
 // takes the whole process down with a stack overflow — every single-name hop
 // re-queries the database, so nothing else bounds it.
-func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string]bool) *ModelInfo {
+func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string]bool, connMap map[string]*ModelInfo) *ModelInfo {
 	if !strings.Contains(entry, "/") {
 		if h.Repo == nil || visiting[entry] {
 			return nil
@@ -136,7 +136,7 @@ func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string
 				visiting[entry] = true
 				var first *ModelInfo
 				for _, sub := range subModels {
-					if info := h.resolveModelEntryGuarded(sub, visiting); info != nil {
+					if info := h.resolveModelEntryGuarded(sub, visiting, connMap); info != nil {
 						first = info
 						break
 					}
@@ -162,6 +162,12 @@ func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string
 		return info
 	}
 
+	if connMap != nil {
+		if connInfo, ok := connMap[prefix]; ok && connInfo != nil {
+			return &ModelInfo{Provider: connInfo.Provider, Model: model, ConnectionID: connInfo.ConnectionID}
+		}
+	}
+
 	provider := resolveProviderAlias(prefix)
 	if provider != prefix {
 		if info := h.resolvePrefixProvider(provider, model); info != nil {
@@ -180,6 +186,28 @@ func (h *ChatHandler) resolveModelEntryGuarded(entry string, visiting map[string
 	return &ModelInfo{Provider: provider, Model: model}
 }
 
+// normalizeWebComboSeats auto-appends /search or /fetch for bare provider names
+// in webSearch and webFetch combos, preserving compatibility with legacy combo definitions.
+func normalizeWebComboSeats(kind *string, seats []string) {
+	if kind == nil {
+		return
+	}
+	suffix := ""
+	switch *kind {
+	case "webSearch":
+		suffix = "/search"
+	case "webFetch":
+		suffix = "/fetch"
+	default:
+		return
+	}
+	for i, seat := range seats {
+		if !strings.Contains(seat, "/") {
+			seats[i] = seat + suffix
+		}
+	}
+}
+
 // expandComboModels recursively expands combo names into concrete model leaves
 // with cycle detection (visiting map) and max depth guard (max 5).
 func (h *ChatHandler) expandComboModels(models []string, visiting map[string]bool, depth int) []string {
@@ -195,6 +223,7 @@ func (h *ChatHandler) expandComboModels(models []string, visiting map[string]boo
 			if combo, err := h.Repo.GetComboByName(m); err == nil && combo != nil && combo.Models != "" {
 				var subModels []string
 				if err := json.Unmarshal([]byte(combo.Models), &subModels); err == nil && len(subModels) > 0 {
+					normalizeWebComboSeats(combo.Kind, subModels)
 					if visiting == nil {
 						visiting = make(map[string]bool, 4)
 					}
@@ -335,6 +364,7 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 		if err == nil && combo != nil && combo.Models != "" {
 			var modelStrings []string
 			if err := json.Unmarshal([]byte(combo.Models), &modelStrings); err == nil && len(modelStrings) > 0 {
+				normalizeWebComboSeats(combo.Kind, modelStrings)
 				// Flatten nested combos into concrete leaves so rotation covers
 				// every reachable model (a nested combo entry used to collapse to
 				// its first leaf, so combo-wombo -> free-tier never rotated).
@@ -533,4 +563,10 @@ func (h *ChatHandler) resolveComboRouting(comboName string, fallbackStrategy str
 	}
 
 	return strategy, stickyLimit, ""
+}
+
+// isCopilotResponsesModel reports whether a resolved GitHub Copilot model id is
+// served by the Responses-native upstream (GPT-6.x / GPT-5.5+).
+func isCopilotResponsesModel(provider, model string) bool {
+	return executor.IsCopilotResponsesModel(provider, model)
 }

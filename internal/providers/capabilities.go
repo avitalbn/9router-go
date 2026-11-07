@@ -534,6 +534,27 @@ var providerCapabilities = map[string]map[string]Capabilities{
 		"deepseek-v4-flash":   {Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 50000},
 		"deepseek-v3-2-volc":  {Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false)},
 	},
+	"hcnsec": {
+		"auto":                     {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"DeepSeek-V4-Flash":        {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"DeepSeek-V4-Pro":          {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"DeepSeek-V4.1-Flash":      {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"glm-5.3":                  {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 131072},
+		"glm-5.3-flash":            {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 131072},
+		"MiMo-V2.6-Flash":          {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"MiniCPM-V-4.7-35B-A3B":    {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 262144, MaxOutput: 65536},
+		"MiniMax-M3.1-Flash":       {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"Qwen3-Embedding-8B":       {},
+		"Qwen3.8-27B":              {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 200000, MaxOutput: 65536},
+		"Qwen3.8-Flash-Next":       {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 262144, MaxOutput: 65536},
+		"sensenova-6.8-flash-lite": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"sensenova-u1.5-lite":      {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"step-5-preview":           {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 64000},
+		"stepaudio-2.5-asr":        {},
+		"stepaudio-2.5-chat":       {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"stepaudio-2.5-realtime":   {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
+		"stepaudio-2.5-tts":        {},
+	},
 	"poolside": {
 		"laguna-s-2.1":  {Reasoning: true, Tools: true, ThinkingFormat: "openai"},
 		"laguna-xs-2.1": {Reasoning: true, Tools: true, ThinkingFormat: "openai"},
@@ -683,6 +704,15 @@ func init() {
 		"gpt-3.5-turbo": {Tools: true},
 	}
 
+	// Cloudflare AI (workers-ai). Mistral Small 3.1 and Kimi K2.6 are vision
+	// models: keep their image_url parts instead of flattening them to text.
+	// Cloudflare AI speaks the OpenAI wire format, so they take openai thinking.
+	// Kimi K2.6 uses the kimi thinking level set (levelMax) per the fixture.
+	providerCapabilities["cloudflare-ai"] = map[string]Capabilities{
+		"@cf/mistralai/mistral-small-3.1-24b-instruct": {Vision: true, Tools: true, ThinkingFormat: "openai"},
+		"@cf/moonshotai/kimi-k2.6":                     {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi"},
+	}
+
 	// NaN.Builders (nanbuilders) — OpenAI-compatible free tier
 	providerCapabilities["nanbuilders"] = map[string]Capabilities{
 		"gpt-4o":        {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 128000, MaxOutput: 16384},
@@ -700,6 +730,7 @@ func init() {
 	// Aliases share the same capabilities catalog
 	providerCapabilities["dx"] = providerCapabilities["daoxe"]
 	providerCapabilities["nan"] = providerCapabilities["nanbuilders"]
+	providerCapabilities["hc"] = providerCapabilities["hcnsec"]
 	providerCapabilities["oad"] = providerCapabilities["openadapter"]
 
 	initPatternIndex()

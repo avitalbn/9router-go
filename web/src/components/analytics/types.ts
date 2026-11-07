@@ -43,6 +43,7 @@ export interface RecentRequestItem {
   cachedTokens?: number
   completionTokens?: number
   timestamp?: string
+  loopWarning?: string
 }
 export interface ActiveRequestItem {
   model?: string
@@ -70,6 +71,14 @@ export interface FallbackAttemptItem {
   reason?: 'success' | 'timeout' | 'client_canceled' | 'quota_exceeded' | 'rate_limited' | 'authentication' | 'upstream_error' | 'unavailable'
 }
 
+export interface LoopFindingItem {
+  rule: string
+  severity: 'warning' | 'critical'
+  message: string
+  tool?: string
+  count?: number
+}
+
 export interface RequestDetailItem {
   requestId?: string
   id?: string
@@ -90,6 +99,8 @@ export interface RequestDetailItem {
   cacheSource?: string
   cost?: number
   error?: string
+  loopWarning?: string
+  anomalies?: LoopFindingItem[]
   attempts?: FallbackAttemptItem[]
   latency?: {
     total?: number
@@ -120,6 +131,8 @@ export interface RequestDetailItem {
 
 export interface StatsData {
   totalRequests?: number
+  totalErrors?: number
+  successRate?: number | null
   totalPromptTokens?: number
   totalCompletionTokens?: number
   totalCachedTokens?: number

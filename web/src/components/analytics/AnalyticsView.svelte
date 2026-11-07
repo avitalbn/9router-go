@@ -22,6 +22,7 @@
   import SectionMenu from './SectionMenu.svelte'
   import SummaryKpiCards from './SummaryKpiCards.svelte'
   import UsageBreakdownTable from './UsageBreakdownTable.svelte'
+  import UsageByAPIKeyTable from './UsageByAPIKeyTable.svelte'
   import RequestDetailsTab from './RequestDetailsTab.svelte'
   import UsageChart from './UsageChart.svelte'
   import ProviderTopologyCard from './ProviderTopologyCard.svelte'
@@ -166,6 +167,8 @@
                 totalCompletionTokens: res.totalCompletionTokens,
                 totalCachedTokens: res.totalCachedTokens,
                 totalCost: res.totalCost,
+                totalErrors: res.totalErrors,
+                successRate: res.successRate,
                 byProvider: res.byProvider,
                 activeRequests: res.activeRequests,
                 recentRequests: res.recentRequests,
@@ -699,6 +702,8 @@
         </Card>
       {:else if block.key === 'overview.breakdown'}
         <UsageBreakdownTable {stats} {providerNodes} />
+      {:else if block.key === 'overview.byApiKey'}
+        <UsageByAPIKeyTable {period} />
       {/if}
     {/each}
   {:else if section === 'cache'}
@@ -775,11 +780,18 @@
                   <span
                     class="mx-auto block w-1.5 h-1.5 rounded-full {req.status === 'ok' || req.status === 'success'
                       ? 'bg-success'
-                      : 'bg-red-500'}"
+                      : req.status === 'canceled'
+                        ? 'bg-text-muted'
+                        : 'bg-red-500'}"
                   ></span>
                 </td>
                 <td class="py-1.5 pr-2 min-w-0">
-                  <span class="block truncate font-mono text-[11px]" title={req.model}>{req.model}</span>
+                  <span class="inline-flex items-center gap-1 max-w-full truncate font-mono text-[11px]" title={req.loopWarning ? `⚠️ ${req.loopWarning} · ${req.model}` : req.model}>
+                    {#if req.loopWarning}
+                      <span class="text-amber-500 text-[11px] shrink-0">⚠️</span>
+                    {/if}
+                    <span class="truncate">{req.model}</span>
+                  </span>
                 </td>
                 <td class="py-1.5 pr-3 text-right whitespace-nowrap">
                   <span class="text-primary">{fmt(req.promptTokens)}↑</span>

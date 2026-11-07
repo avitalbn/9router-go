@@ -59,6 +59,10 @@ type ChatHandler struct {
 	// one would otherwise upsert the same row.
 	deprecationMu    sync.Mutex
 	deprecationCache map[string]time.Time
+	// cooldownCache throttles kv writes when a model is cooled down after a
+	// live failure, so repeated failures within a single request window do not
+	// hammer the kv table with identical cooldown upserts.
+	cooldownCache map[string]time.Time
 	// smartSticky pins the model a session's smart-routed combo settles on,
 	// so later turns reuse the provider holding the warm prompt cache.
 	smartStickyMu sync.Mutex
@@ -67,6 +71,10 @@ type ChatHandler struct {
 	// period ends. See benchTimedOutModel.
 	timeoutBenchMu sync.Mutex
 	timeoutBench   map[string]time.Time
+	// comboBudgetMu guards comboBudget, the per-combo call counter behind the
+	// BudgetCalls admission gate. See comboBudgetExhausted.
+	comboBudgetMu sync.Mutex
+	comboBudget   map[string]*comboBudgetCounter
 	// SessionAffinity pins client sessions to upstream connection accounts.
 	sessionAffinityMu sync.Mutex
 	SessionAffinity   *SessionAffinityStore

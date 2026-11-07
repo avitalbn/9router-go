@@ -82,6 +82,8 @@ var patternThinking = []thinkingPattern{
 	// probed live via the antigravity lane. LOW is the floor here too, so a
 	// disable request clamps to low instead of reaching Google as minimal.
 	{Pattern: "*gemini-3.8*", Levels: []string{"low", "medium", "high"}},
+	{Pattern: "*gemini-3.7*", Levels: []string{"low", "medium", "high"}},
+	{Pattern: "*gemini-3.6*", Levels: []string{"low", "medium", "high"}},
 	{Pattern: "*claude*4.6*", Levels: levelClaudeNoXHigh},
 	{Pattern: "*claude*4-6*", Levels: levelClaudeNoXHigh},
 	{Provider: "codex", Pattern: "*gpt-6*", Levels: codexGPT56Levels()},
@@ -89,6 +91,10 @@ var patternThinking = []thinkingPattern{
 	{Provider: "codex", Pattern: "*gpt-5.6-terra*", Levels: codexGPT56UltraLevels()},
 	{Provider: "codex", Pattern: "*gpt-5.6-luna*", Levels: codexGPT56Levels()},
 	{Pattern: "*codex*", Levels: []string{"low", "medium", "high", "xhigh"}}, // codex cannot disable thinking
+	// Groq gpt-oss accepts only low|medium|high (probed live: minimal/xhigh/auto/none/max
+	// all answer 400). The openai format default [none..xhigh] would let the
+	// picker and the writer emit levels Groq rejects.
+	{Provider: "groq", Pattern: "*gpt-oss*", Levels: []string{"low", "medium", "high"}},
 	// OpenCode Free (oc) MiMo rides the same OpenRouter-backed route as the
 	// rest of that lane and takes the full OpenAI effort enum verbatim (all
 	// seven values 200, anything else 400 "Invalid option"), so it owns the

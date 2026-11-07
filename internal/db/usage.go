@@ -237,6 +237,97 @@ func (r *Repo) GetUsageGroupByModelSince(since string) ([]UsageGroupRow, error) 
 	return scanUsageGroupRows(rows, "model")
 }
 
+// UsageClientKeyRow is one client-API-key aggregate over a time window.
+//
+// ClientKey holds the masked key the CALLER presented (the shape
+// handlerutil.MaskAPIKey writes), not the upstream credential the
+// provider/model group describes. An operator who resells the gateway needs
+// this axis: it is the key they sold.
+type UsageClientKeyRow struct {
+	ClientKey        string
+	Requests         int
+	Errors           int
+	PromptTokens     int
+	CompletionTokens int
+	CachedTokens     int
+	Cost             float64
+	LastUsed         string
+}
+
+// usageClientKeyCachedTokens sums the cached prompt tokens of a group of rows.
+//
+// The counters live in the row's tokens JSON, so the read has to reach the
+// row. The shapes and their precedence mirror translator.CachedTokensFromJSON,
+// which is what wrote the row: the first shape that is PRESENT wins, and a
+// JSON null is not a value. A shape that is present and zero still wins, which
+// is why the test is "is it there" and not "is it non-zero".
+//
+// Every shape is guarded by json_valid because a row written by an older build
+// may hold no JSON at all, and json_extract on a non-JSON value is an error
+// rather than a zero.
+const usageClientKeyCachedTokens = `
+	COALESCE(SUM(
+		CASE WHEN json_valid(tokens) THEN
+			CASE
+				WHEN json_extract(tokens, '$.cached_tokens') IS NOT NULL
+					THEN COALESCE(json_extract(tokens, '$.cached_tokens'), 0)
+				WHEN json_extract(tokens, '$.cache_read_input_tokens') IS NOT NULL
+					THEN COALESCE(json_extract(tokens, '$.cache_read_input_tokens'), 0)
+				WHEN json_extract(tokens, '$.prompt_tokens_details.cached_tokens') IS NOT NULL
+					THEN COALESCE(json_extract(tokens, '$.prompt_tokens_details.cached_tokens'), 0)
+				WHEN json_extract(tokens, '$.input_tokens_details.cached_tokens') IS NOT NULL
+					THEN COALESCE(json_extract(tokens, '$.input_tokens_details.cached_tokens'), 0)
+				WHEN json_extract(tokens, '$.prompt_eval_cached_count') IS NOT NULL
+					THEN COALESCE(json_extract(tokens, '$.prompt_eval_cached_count'), 0)
+				ELSE 0
+			END
+		ELSE 0
+		END
+	), 0)
+`
+
+// usageGroupByClientKeyQuery is the statement GetUsageGroupByClientKeySince
+// runs.
+//
+// It is a named constant for the reason the three usageHistory reads above
+// are: the query-plan test runs EXPLAIN QUERY PLAN against it, and a copy of
+// the SQL in the test would pin the copy rather than the read — the day the
+// two drifted, the test would still be green while the read scanned the
+// ledger.
+const usageGroupByClientKeyQuery = `SELECT COALESCE(clientKey, ''), ` + usageGroupStats + `, ` + usageClientKeyCachedTokens +
+	` FROM usageHistory WHERE timestamp >= ? GROUP BY COALESCE(clientKey, '')`
+
+// GetUsageGroupByClientKeySince aggregates usageHistory per client key since
+// the cutoff.
+//
+// This is a different axis from the provider/model groups: those describe
+// where the spend went, this describes who caused it.
+func (r *Repo) GetUsageGroupByClientKeySince(since string) ([]UsageClientKeyRow, error) {
+	rows, err := r.db.Query( //nolint:noctx,rowserrcheck
+		usageGroupByClientKeyQuery, since)
+	if err != nil {
+		return nil, fmt.Errorf("query usage group by client key: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var res []UsageClientKeyRow
+	for rows.Next() {
+		var row UsageClientKeyRow
+		if err := rows.Scan(
+			&row.ClientKey, &row.Requests, &row.Errors,
+			&row.PromptTokens, &row.CompletionTokens, &row.Cost, &row.LastUsed,
+			&row.CachedTokens,
+		); err != nil {
+			return nil, fmt.Errorf("scan usage group by client key: %w", err)
+		}
+		res = append(res, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate usage group by client key: %w", err)
+	}
+	return res, nil
+}
+
 // FoldUsageGroupByProvider collapses model-level group rows into the
 // provider-level rows GetUsageGroupByProviderSince would have queried.
 //
@@ -641,6 +732,7 @@ type RequestDetailListRow struct {
 	Cost           float64
 	Combo          string
 	Protocol       string
+	LoopWarning    string
 }
 
 // requestDetailListSelect pulls the renderable values straight out of the
@@ -660,6 +752,7 @@ const requestDetailListSelect = `
 	       COALESCE(json_extract(data, '$.protocol'), ''),
 	       COALESCE(json_extract(data, '$.requestId'), ''),
 	       COALESCE(json_extract(data, '$.requestedModel'), ''),
+	       COALESCE(json_extract(data, '$.loopWarning'), COALESCE(json_extract(data, '$.anomalies[0].message'), '')),
 	       json_valid(data)
 	FROM requestDetails
 	%s
@@ -706,6 +799,7 @@ func (r *Repo) GetRequestDetailsPaged(ctx context.Context, limit, offset int, si
 		if err := rows.Scan(&row.ID, &row.Timestamp, &row.Provider, &row.Model,
 			&row.ConnectionID, &row.Status, &row.LatencyTTFT, &row.LatencyTotal, &row.TokensJSON,
 			&row.Account, &row.Cost, &row.Combo, &row.Protocol, &row.RequestID, &row.RequestedModel,
+			&row.LoopWarning,
 			&dataValid); err != nil {
 			return nil, total, fmt.Errorf("scan requestDetails: %w", err)
 		}
@@ -737,4 +831,14 @@ func (r *Repo) GetRequestDetailByID(id string) (string, error) {
 		return "", fmt.Errorf("get request detail %s: %w", id, err)
 	}
 	return data, nil
+}
+
+// GetRequestDetailsErrorCountSince returns the count of failed requests recorded in requestDetails since cutoff.
+func (r *Repo) GetRequestDetailsErrorCountSince(ctx context.Context, since string) (int, error) {
+	var count int
+	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM requestDetails WHERE status = 'error' AND timestamp >= ?`, since).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count requestDetails errors since %s: %w", since, err)
+	}
+	return count, nil
 }
