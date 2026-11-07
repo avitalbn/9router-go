@@ -992,7 +992,11 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	// before any executor or forwarding function writes headers to w.
 	injectRouteHeaders(w, provider, model, f.ComboName, f.Attempts)
 
-	if exec := executor.Get(provider); exec != nil {
+	exec := executor.Get(provider)
+	if exec == nil && executor.UpstreamSpeaksResponses(provider, model, providerCfg) {
+		exec = executor.Default()
+	}
+	if exec != nil {
 		execReq := &executor.Request{
 			Ctx:            ctx,
 			Client:         httpClient,
@@ -1041,7 +1045,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		if rErr == nil && refreshedKey != "" && refreshedKey != apiKey {
 			log.Info("fallback", "reactive 401 token refresh success, retrying request", "conn", connectionID)
 			apiKey = NormalizeProviderToken(provider, refreshedKey)
-			if exec := executor.Get(provider); exec != nil {
+			if exec != nil {
 				retryReq := &executor.Request{
 					Ctx:            ctx,
 					Client:         httpClient,
@@ -1049,6 +1053,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 					Provider:       provider,
 					APIKey:         apiKey,
 					Body:           pipedBody,
+					ModelName:      model,
 					IsStream:       isStream,
 					ClaudeClient:   endpoint == "/v1/v1/messages" || endpoint == "/v1/messages",
 					TranslateResp:  translateResponse,

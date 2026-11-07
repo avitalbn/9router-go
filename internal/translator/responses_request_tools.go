@@ -7,6 +7,7 @@ import (
 // applyTools rewrites the Responses tool declarations into Chat function
 // declarations, plus any additional_tools the input carried.
 func (c *responsesRequestConv) applyTools(envelope map[string]any) {
+	convertResponsesToolChoice(envelope)
 	declared, _ := envelope["tools"].([]any)
 	all := make([]any, 0, len(declared)+len(c.additionalTools))
 	all = append(all, declared...)
@@ -28,6 +29,24 @@ func (c *responsesRequestConv) applyTools(envelope map[string]any) {
 		}
 	}
 	envelope["tools"] = converted
+}
+
+// A named Responses choice uses a top-level name; Chat Completions requires
+// function.name, including for a custom tool exposed as a function above.
+func convertResponsesToolChoice(envelope map[string]any) {
+	choice, ok := envelope["tool_choice"].(map[string]any)
+	if !ok || choice["function"] != nil {
+		return
+	}
+	kind, _ := choice["type"].(string)
+	name, _ := choice["name"].(string)
+	if name == "" || (kind != openaiBlockFunction && kind != responsesToolTypeCustom) {
+		return
+	}
+	envelope["tool_choice"] = map[string]any{
+		"type":     openaiBlockFunction,
+		"function": map[string]any{"name": name},
+	}
 }
 
 // convertResponsesTool maps one Responses tool declaration to a Chat function

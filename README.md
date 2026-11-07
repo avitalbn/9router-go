@@ -254,6 +254,27 @@ Full schema, operator contract, and multi-process limits: [`DATABASE.md`](DATABA
 
 Download from [GitHub Releases](https://github.com/luqman-v1/9router-go/releases/latest), verify against `SHA256SUMS.txt`.
 
+### Custom providers with tools and reasoning
+
+For an OpenAI-compatible upstream that rejects function tools with reasoning
+on Chat Completions (for example, HAI Proxy), edit its provider node to use
+API type `responses` and a base URL ending in `/responses`. For a local HAI
+Proxy, use `http://localhost:6655/openai/v1/responses`.
+
+Clients keep the gateway base URL `http://127.0.0.1:20130/v1` and the node's
+existing model prefix. Chat Completions clients receive translated JSON or SSE
+tool calls; native Responses clients retain their request and response format.
+The compatible-provider path keeps standard Responses tools at the top
+level and preserves reasoning. Codex uses its separate tools-in-input transport.
+
+HAI's older models can be chat-only: `gpt-4.1-mini`, for example, rejects
+`/responses`. Keep a separate Chat Completions node for those models. A split
+configuration can use `hai/gpt-6.1-sol` and `hai/gpt-5.6-terra` on the Responses
+node, and `hai-chat/gpt-4.1-mini` on a `hai-chat` node pointed at
+`http://localhost:6655/openai/v1/chat/completions` with API type `chat`.
+Responses clients can also use the chat-only node: named function and custom
+tool choices are converted to Chat Completions' `tool_choice.function` shape.
+
 ### 🧪 Experimental builds
 
 Unreleased work also ships as **experimental** builds. They are published

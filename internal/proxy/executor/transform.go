@@ -137,6 +137,12 @@ func clampCallID(id string) string {
 // buildResponsesBody transforms OpenAI Chat Completions body → Responses API body.
 // Returns (responsesBody, modelName, error).
 func buildResponsesBody(body []byte) ([]byte, string, error) {
+	return buildResponsesRequest(body, true)
+}
+
+// buildResponsesRequest keeps standard function tools at the top level unless
+// the caller uses the Codex-specific model transport shape.
+func buildResponsesRequest(body []byte, codexShape bool) ([]byte, string, error) {
 	// If the body is already in Responses API format (has input[]), normalize fields and return
 	var quickCheck struct {
 		Input               any    `json:"input"`
@@ -264,7 +270,9 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 				}
 			}
 
-			applyCodexModelShape(m, cleanModel)
+			if codexShape {
+				applyCodexModelShape(m, cleanModel)
+			}
 			out, err := marshalStable(m)
 			return out, cleanModel, err
 		}
@@ -550,7 +558,9 @@ func buildResponsesBody(body []byte) ([]byte, string, error) {
 		}
 	}
 
-	applyCodexModelShape(respReq, cleanModel)
+	if codexShape {
+		applyCodexModelShape(respReq, cleanModel)
+	}
 	reqBody, err := marshalStable(respReq)
 	return reqBody, cleanModel, err
 }

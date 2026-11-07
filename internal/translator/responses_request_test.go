@@ -486,3 +486,25 @@ func TestResponsesToChatRequest_NoToolsLeavesFieldAbsent(t *testing.T) {
 		t.Error("tools must stay absent when the request declared none")
 	}
 }
+
+func TestResponsesToChatRequest_ToolChoice(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		choice string
+		want   string
+	}{
+		{"named function", `{"type":"function","name":"get_weather"}`, `{"function":{"name":"get_weather"},"type":"function"}`},
+		{"named custom", `{"type":"custom","name":"run"}`, `{"function":{"name":"run"},"type":"function"}`},
+		{"chat choice", `{"type":"function","function":{"name":"get_weather"}}`, `{"function":{"name":"get_weather"},"type":"function"}`},
+		{"auto", `"auto"`, `"auto"`},
+		{"none", `"none"`, `"none"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			converted := convertedBody(t, `{"input":"hello","tool_choice":`+tc.choice+`}`)
+			choice, err := json.Marshal(converted["tool_choice"], json.Deterministic(true))
+			if err != nil || string(choice) != tc.want {
+				t.Fatalf("tool_choice=%s, want %s, error=%v", choice, tc.want, err)
+			}
+		})
+	}
+}

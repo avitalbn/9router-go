@@ -137,6 +137,9 @@ func DowngradeJsonSchemaToJSONObject(body []byte) []byte {
 
 // ForwardOpenAI sends an OpenAI-format request and writes the response.
 func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
+	if strings.HasSuffix(strings.TrimRight(req.Config.BaseURL, "/"), "/responses") {
+		return forwardOpenAIResponses(w, req)
+	}
 	// Provider-scoped param rules from upstream paramSupport strip unsupported
 	// params on the outgoing body (executors/default.js:91). The openai rule
 	// renames max_tokens because current OpenAI models answer 400 "Use
