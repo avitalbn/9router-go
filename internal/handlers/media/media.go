@@ -804,7 +804,7 @@ func (h *MediaHandler) defaultWebSearchModel() string {
 			}
 		}
 	}
-	return "gpt-4o"
+	return "tavily/search"
 }
 
 // defaultWebFetchModel returns "fetch-combo" if available, then any webFetch combo, then falls back to jina-reader.
@@ -833,7 +833,25 @@ func (h *MediaHandler) HandleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer r.Body.Close()
-	h.forwardMediaRequest(w, r, body, h.defaultWebSearchModel(), "/v1/search")
+	var params struct {
+		Model    string `json:"model"`
+		Provider string `json:"provider"`
+	}
+	if err := json.Unmarshal(body, &params); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	model := params.Model
+	if model == "" {
+		model = params.Provider
+	}
+	if model == "" {
+		model = h.defaultWebSearchModel()
+	}
+	if model != params.Model && (params.Model != "" || params.Provider != "") {
+		body = handlerutil.UpdateModelInBody(body, model)
+	}
+	h.forwardMediaRequest(w, r, body, model, "/v1/search")
 }
 
 // HandleScrape handles /v1/scrape.
@@ -985,6 +1003,11 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	if _, refused := guardMediaInput(w, r.Header.Get("Content-Type"), body); refused {
 		return
 	}
+	// Preserve the caller's model spelling for upstream access rules; only the
+	// search resolver needs the canonical seat for bare dedicated providers.
+	if endpoint == "/v1/search" {
+		model = h.normalizeSearchModel(model)
+	}
 	modelInfo, err := h.ChatH.ResolveModel(model)
 	if err != nil {
 		log.Warn("media", "resolve model failed", "endpoint", endpoint, "model", model, "error", err)
@@ -1014,6 +1037,18 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 				if err := h.handleXquikSearch(w, r, body, subInfo); err == nil {
 					return
 				} else {
+					lastErr, lastStatus = searchErrorParts(err)
+					continue
+				}
+			}
+			if endpoint == "/v1/search" && isNativeSearchProvider(subInfo.Provider) {
+				if err := h.handleNativeSearch(w, r, body, subInfo); err == nil {
+					return
+				} else {
+					if r.Context().Err() != nil {
+						writeSearchError(w, err)
+						return
+					}
 					lastErr, lastStatus = searchErrorParts(err)
 					continue
 				}
@@ -1218,6 +1253,12 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 
 	if endpoint == "/v1/search" && (modelInfo.Provider == "xquik" || modelInfo.Provider == "xquik-search") {
 		if err := h.handleXquikSearch(w, r, body, modelInfo); err != nil {
+			writeSearchError(w, err)
+		}
+		return
+	}
+	if endpoint == "/v1/search" && isNativeSearchProvider(modelInfo.Provider) {
+		if err := h.handleNativeSearch(w, r, body, modelInfo); err != nil {
 			writeSearchError(w, err)
 		}
 		return

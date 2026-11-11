@@ -95,24 +95,6 @@ func TestHandleSearch_HonorsSearchURL(t *testing.T) {
 	}
 }
 
-func TestHandleSearch_MissingModel(t *testing.T) {
-	database, cleanup := setupMultimodalTestDB(t)
-	defer cleanup()
-	repo := db.NewRepo(database)
-	handler := newTestMediaHandler(repo)
-
-	body := `{"query":"hello"}`
-	req := httptest.NewRequest("POST", "/v1/search", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-
-	handler.HandleSearch(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d", rec.Code)
-	}
-}
-
 func TestHandleScrape_Success(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/scrape") {

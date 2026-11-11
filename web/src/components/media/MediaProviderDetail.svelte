@@ -195,7 +195,7 @@
       await api.createConnection({
         provider: provider.id,
         authType: 'apikey',
-        key: newConnKey.trim(),
+        apiKey: newConnKey.trim(),
         name: newConnName.trim() || undefined,
         isActive: 1
       })
