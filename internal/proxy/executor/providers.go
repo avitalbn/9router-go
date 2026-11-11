@@ -77,6 +77,13 @@ func ForwardCodex(w http.ResponseWriter, req *Request) error {
 	if err != nil {
 		return fmt.Errorf("transform body: %w", err)
 	}
+	responsesLite := false
+	if req.Provider != "perplexity-agent" {
+		transformedBody, responsesLite, err = shapeCodexResponsesBody(transformedBody, codexLiteRequested(req.Ctx))
+		if err != nil {
+			return fmt.Errorf("shape Codex body: %w", err)
+		}
+	}
 
 	// Resolve conversation-stable session_id for Codex prompt caching
 	sessionID := req.SessionID
@@ -95,8 +102,6 @@ func ForwardCodex(w http.ResponseWriter, req *Request) error {
 
 	// Inject prompt_cache_key for stable Codex prompt caching if not already set
 	transformedBody = injectCodexPromptCacheKey(transformedBody, sessionID)
-
-	responsesLite := codexResponsesLiteBody(transformedBody)
 
 	// The ChatGPT Codex backend rejects unsupported parameters and requires the allowlist
 	transformedBody = stripCodexUnsupportedTokenParams(transformedBody, responsesLite)
@@ -304,16 +309,17 @@ func kiroUpstreamBody(req *Request) ([]byte, error) {
 	// plane; fold them onto the dotted upstream alias.
 	model = normalizeKiroUpstreamModelId(model)
 
-	profileArn := ""
+	profileArn, authMethod := "", ""
 	if req.ConnData != nil {
 		if s, ok := req.ConnData["profileArn"].(string); ok {
 			profileArn = strings.TrimSpace(s)
 		}
+		authMethod, _ = req.ConnData["authMethod"].(string)
 	}
 
 	out, err := translator.OpenAIToKiro(req.Body, translator.KiroTranslateOptions{
 		Model:      model,
-		ProfileArn: profileArn,
+		ProfileArn: providers.KiroEffectiveProfileARN(authMethod, profileArn),
 	})
 	if err != nil {
 		log.Error("executor", "kiro translation failed", "model", model, "error", err)
@@ -368,11 +374,15 @@ func ForwardAzure(w http.ResponseWriter, req *Request) error {
 	if req.IsStream {
 		r.Header.Set("Accept", "text/event-stream")
 	}
+	if req.IsStream && r.Header.Get("Accept-Encoding") == "" {
+		r.Header.Set("Accept-Encoding", "identity")
+	}
 
 	resp, err := req.Client.Do(r)
 	if err != nil {
 		return fmt.Errorf("upstream request failed: %w", err)
 	}
+	proxy.UnwrapIdentityGzip(r, resp)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -657,11 +667,15 @@ func forwardCommandcodeOnce(ctx context.Context, w http.ResponseWriter, req *Req
 			r.Header.Set(k, v)
 		}
 	}
+	if r.Header.Get("Accept-Encoding") == "" {
+		r.Header.Set("Accept-Encoding", "identity")
+	}
 	resp, err := req.Client.Do(r)
 	if err != nil {
 		return fmt.Errorf("upstream request failed: %w", err)
 	}
 	defer resp.Body.Close()
+	proxy.UnwrapIdentityGzip(r, resp)
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
@@ -744,7 +758,7 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 
 		if resp.StatusCode != http.StatusOK {
 			errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
-			return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody}
+			return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody, Header: resp.Header}
 		}
 
 		if req.IsStream {
@@ -783,6 +797,11 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 		if cleanModel != "" {
 			reqMap["model"] = cleanModel
 		}
+		// A reasoning model spends the same output ceiling on its thinking as on
+		// the answer, so a small client budget returns empty content with
+		// finish_reason "length" — see output_budget.go for the measurements.
+		clampOpenCodeOutputBudget(reqMap, "opencode", cleanModel)
+		includeStreamUsage(reqMap)
 		// The free backend validates reasoning_effort against the plain
 		// OpenAI enum and answers 400 "Invalid option" for "auto", which
 		// adaptive thinking (Claude Code's thinking:{type:"adaptive"})
@@ -824,7 +843,7 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
-		return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody}
+		return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody, Header: resp.Header}
 	}
 
 	if req.IsStream {
@@ -1051,6 +1070,7 @@ func ensureMessagesFor(body []byte, provider, model string) []byte {
 	// (upstream thinkingUnified captureThinking)
 	applyClaudeThinkingDisplay(reqMap)
 	applyClaudeThinkingType(reqMap, provider, model)
+	SanitizeClaudeThinking(reqMap)
 	enforceClaudeThinkingSampling(reqMap)
 	delete(reqMap, "stream_options")
 	delete(reqMap, "store")
@@ -1319,7 +1339,7 @@ func convertOpenAIMessagesToClaude(messages []any) (systemText string, claudeMes
 			// that re-serialize the block through a strict Rust struct — Zed
 			// answers "missing field `is_error`" to a request Anthropic itself
 			// accepts. Emitting it always keeps one body valid on both.
-			isError, _ := msgMap["is_error"].(bool)
+			isError := translator.ToolResultIsError(msgMap)
 			intermediate = append(intermediate, map[string]any{
 				"role": "user",
 				"content": []any{
@@ -1514,44 +1534,25 @@ func deriveOpencodeSession(rawSession, clientTool, connID string) string {
 	return proxy.TranslateOpenCodeSessionID(raw, clientTool)
 }
 
-// museSparkMinOutputTokens is the output-budget floor for Muse Spark. These
-// models spend 570-1320 hidden reasoning tokens before emitting any completion
-// text, so a caller-set budget below the floor is consumed entirely by
-// reasoning: the upstream answers 200 with an empty message, or stalls the
-// stream until the gateway's watchdog reports a 502, and the caller sees a
-// failure that names neither the model nor the budget.
-//
-// 512 is upstream's measured boundary (max_tokens 64/100 → empty content,
-// 256/512/1024 → content present), not a round number picked here. Port of
-// OmniRoute MUSE_SPARK_MIN_OUTPUT_TOKENS
-// (open-sse/executors/opencodeMuseSpark.ts).
-const museSparkMinOutputTokens = 512
-
 // museSparkOutputBudgetFields are the three spellings an OpenAI-shaped request
 // may use for its output cap: Chat Completions' max_tokens, Responses'
-// max_output_tokens, and the OpenAI-compatible max_completion_tokens. A Muse
-// Spark request may arrive on either lane, so all three are clamped.
+// max_output_tokens, and the OpenAI-compatible max_completion_tokens. A request
+// may arrive on either lane, so all three are clamped.
 var museSparkOutputBudgetFields = []string{"max_tokens", "max_output_tokens", "max_completion_tokens"}
 
-// clampMuseSparkOutputBudget raises a caller-set output budget to the floor and
-// returns the fields it changed. It only ever raises: an explicit larger budget
-// and a request that set no budget at all stay byte-identical, because
-// synthesizing a cap the caller never asked for would silently shorten real
-// answers.
+// clampMuseSparkOutputBudget raises a caller-set output budget to the floor for
+// the muse-spark responses lane. The floor and the measurement behind it live
+// in output_budget.go; this wrapper only supplies the lane's scope.
+//
+// Muse Spark spends 570-1320 hidden reasoning tokens before emitting any
+// completion text, so a budget below the floor is consumed entirely by
+// reasoning: the upstream answers 200 with an empty message, or stalls the
+// stream until the gateway's watchdog reports a 502.
 func clampMuseSparkOutputBudget(m map[string]any, cleanModel string) []string {
 	if m == nil || !isOpencodeResponsesModel(cleanModel) {
 		return nil
 	}
-	var raised []string
-	for _, field := range museSparkOutputBudgetFields {
-		budget, ok := outputBudgetOf(m[field])
-		if !ok || budget >= museSparkMinOutputTokens {
-			continue
-		}
-		m[field] = museSparkMinOutputTokens
-		raised = append(raised, field)
-	}
-	return raised
+	return clampOutputBudget(m, true, providers.GetCapabilitiesForModel("opencode", cleanModel).MaxOutput)
 }
 
 // outputBudgetOf reads the numeric shape an output cap decodes to. A JSON
@@ -1699,6 +1700,8 @@ func opencodeGoInferenceBase(base string) string {
 	switch {
 	case strings.HasSuffix(base, "/zen/go/v1"):
 		return strings.TrimSuffix(base, "/zen/go/v1") + "/inference/openai/v1"
+	case strings.HasSuffix(base, "/inference/go/openai/v1"):
+		return strings.TrimSuffix(base, "/inference/go/openai/v1") + "/inference/openai/v1"
 	case strings.HasSuffix(base, "/inference/openai/v1"):
 		return base
 	case strings.HasSuffix(base, "/inference/v1"):
@@ -1730,6 +1733,10 @@ func forwardOpencodeGoFree(w http.ResponseWriter, req *Request, cleanModel strin
 		if cleanModel != "" {
 			reqMap["model"] = cleanModel
 		}
+		// Same reasoning-budget floor as the free chat lane: this lane reaches
+		// the same keyless gate, so the same empty-answer failure applies.
+		clampOpenCodeOutputBudget(reqMap, "opencode-go", cleanModel)
+		includeStreamUsage(reqMap)
 		if b, err := marshalStable(reqMap); err == nil {
 			body = b
 		}
@@ -1827,7 +1834,7 @@ func forwardOpencodeGoGemini(w http.ResponseWriter, req *Request, cleanModel, se
 	}
 
 	if req.IsStream {
-		return geminiStream(w, resp.Body, ctx)
+		return geminiStream(w, resp.Body, ctx, req)
 	}
 	return geminiNonStream(w, resp.Body)
 }
@@ -1876,6 +1883,7 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 		// The lane URL is what a relay forwards to, so it is built without a relay
 		// branch.
 		cfg := *req.Config
+		cfg.BaseURL = strings.Replace(cfg.BaseURL, "opencode.ai/zen/go/v1", "opencode.ai/inference/go/openai/v1", 1)
 		if !strings.HasSuffix(cfg.BaseURL, "/responses") {
 			baseURL := strings.TrimRight(cfg.BaseURL, "/")
 			if strings.HasSuffix(baseURL, "/chat/completions") {
@@ -1915,7 +1923,7 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 
 		if resp.StatusCode != http.StatusOK {
 			errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
-			return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody}
+			return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody, Header: resp.Header}
 		}
 
 		if req.IsStream {
@@ -1927,8 +1935,8 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 	}
 
 	if opencodeGoMessagesModels[reqObj.Model] || opencodeGoMessagesModels[cleanModel] {
-		// Route to /zen/go/v1/messages (Anthropic/Claude format)
-		messagesURL := "https://opencode.ai/zen/go/v1/messages"
+		// Route to /inference/go/anthropic/v1/messages (Anthropic/Claude format)
+		messagesURL := "https://opencode.ai/inference/go/anthropic/v1/messages"
 		if req.Config != nil && req.Config.BaseURL != "" && !strings.Contains(req.Config.BaseURL, "opencode.ai") {
 			base := strings.TrimRight(req.Config.BaseURL, "/")
 			if strings.HasSuffix(base, "/chat/completions") {

@@ -169,6 +169,12 @@ func newJSONRequest(ctx context.Context, method, url string, headers map[string]
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+	// A streaming lane asks for an event stream. Pin identity so an edge or
+	// provider cannot answer with a buffered gzip stream that arrives as one
+	// burst instead of token by token. An explicit encoding always wins.
+	if req.Header.Get("Accept-Encoding") == "" && strings.Contains(strings.ToLower(req.Header.Get("Accept")), "text/event-stream") {
+		req.Header.Set("Accept-Encoding", "identity")
+	}
 	return req, nil
 }
 
@@ -301,6 +307,25 @@ func DoRequest(ctx context.Context, client *http.Client, method, url string, hea
 	})
 }
 
+// SendOnce sends one JSON request through client and returns whatever answer
+// arrives, whatever its status. Unlike DoRequest it never replays: no
+// transient-status retry, no direct replay after an apparent proxy failure (a
+// text/plain 403 from the endpoint itself looks like one), and no insecure-TLS
+// retry. It is for requests the router must not repeat on its own initiative,
+// such as a custom JSON business endpoint whose operation may already have
+// run. The caller owns resp.Body and decides which statuses are errors.
+func SendOnce(ctx context.Context, client *http.Client, method, url string, headers map[string]string, body []byte) (*http.Response, error) {
+	req, err := newJSONRequest(ctx, method, url, headers, body)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	resp, err := send(client, req)
+	if err != nil {
+		return nil, fmt.Errorf("upstream request: %w", err)
+	}
+	return resp, nil
+}
+
 // doRequestOnce performs a single attempt.
 func doRequestOnce(ctx context.Context, client *http.Client, method, url string, headers map[string]string, body []byte) (*http.Response, error) {
 	req, err := newJSONRequest(ctx, method, url, headers, body)
@@ -341,6 +366,7 @@ func doRequestOnce(ctx context.Context, client *http.Client, method, url string,
 	if err != nil {
 		return nil, fmt.Errorf("upstream request: %w", err)
 	}
+	UnwrapIdentityGzip(req, resp)
 	if resp.StatusCode != http.StatusOK {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
 		resp.Body.Close()

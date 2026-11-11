@@ -194,6 +194,10 @@ func WithoutStaticHeader(cfg *ProviderConfig, name string) *ProviderConfig {
 // It is the same set upstream wires into PROVIDER_MODELS_CONFIG
 // (src/app/api/providers/[id]/models/route.js, v0.5.91).
 var modelsListURL = map[string]string{
+	// free-pi publishes its catalog at /client-version rather than the standard
+	// /v1/models shape. The suggested-models handler has a "free-pi" filter that
+	// reads the `models` array from this response.
+	"free-pi":     "https://api.freepi.ai/client-version",
 	"tokenharbor": "https://tokenharbor.ai/v1/models",
 	"dahl":        "https://inference.dahl.global/v1/models",
 	"atria":       "https://api.atria-asi.ai/v1/models",
@@ -690,7 +694,7 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 	},
 	"opencode-go": {
-		BaseURL:    "https://opencode.ai/zen/go/v1/chat/completions",
+		BaseURL:    "https://opencode.ai/inference/go/openai/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
@@ -953,7 +957,7 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "raw",
 		StaticHeaders: map[string]string{
 			"anthropic-version":                         "2023-06-01",
-			"Anthropic-Beta":                            "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28",
+			"Anthropic-Beta":                            "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28,extended-cache-ttl-2025-04-11,thinking-display-updates-2026-08-18",
 			"Anthropic-Dangerous-Direct-Browser-Access": "true",
 			"User-Agent":                                "claude-cli/2.1.280 (external, sdk-cli)",
 			"X-App":                                     "cli",
@@ -1460,6 +1464,24 @@ var KnownProviders = map[string]ProviderConfig{
 			"content-type": "application/json",
 		},
 	},
+	// Free-pi — the free, ad-funded distribution of the `pi` coding agent
+	// (dennisonbertram/free-pi-cli). Its upstream is plain [OI] Chat
+	// Completions behind a Bearer JWT, so the transport looks ordinary; what
+	// is not ordinary is session identity. Every request must carry a stable
+	// `x-session-id`, and the account tolerates only a handful of concurrent
+	// sessions (hungkevin/free-pi-cli-proxy server.mjs:958 pins the cap at 4;
+	// we deliberately occupy one — see internal/proxy/executor/free_pi.go).
+	//
+	// Neither header can live in StaticHeaders: x-session-id is derived per
+	// account and x-client-version is refreshed from GET /client-version, so
+	// both are applied by the executor rather than the shared passthrough.
+	// The auth pair is the ordinary bearer one, which is what makes the JWT a
+	// drop-in credential for the existing connection store.
+	"free-pi": {
+		BaseURL:    "https://api.freepi.ai/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
 	"atmorouter": {
 		BaseURL:    "https://atmorouter.dev/v1/chat/completions",
 		AuthHeader: "Authorization",
@@ -1491,6 +1513,7 @@ func PreservesCacheControl(provider string) bool {
 	}
 	return false
 }
+
 // StrictReasoningRemoving reports whether a provider rejects unknown
 // assistant-message reasoning fields echoed on history (upstream
 // paramSupport dropMessageFields): groq, mistral, and cerebras answer 400

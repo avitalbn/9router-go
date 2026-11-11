@@ -163,15 +163,19 @@ func applyClaudeCloaking(body []byte, apiKey, sessionID string) []byte {
 		return body
 	}
 
-	// cch: first 5 hex chars of sha256 over the pre-injection body.
-	cchSum := sha256.Sum256(body)
-	cch := hex.EncodeToString(cchSum[:])[:5]
-	build := make([]byte, 2)
-	if _, err := rand.Read(build); err != nil {
-		build = []byte{0, 0}
+	// cch and build: derived stably from apiKey and sessionID rather than body and rand.Read.
+	// If the billing header text changes on every turn, system[0] mutates, busting Anthropic's
+	// prefix prompt cache and driving cache_read_input_tokens to zero.
+	salt := apiKey
+	if sessionID != "" {
+		salt += ":" + sessionID
 	}
+	h := sha256.Sum256([]byte(salt))
+	build := hex.EncodeToString(h[16:18])[:3]
+	cch := hex.EncodeToString(h[:4])[:5]
+
 	billingText := fmt.Sprintf("x-anthropic-billing-header: cc_version=%s.%s; cc_entrypoint=sdk-cli; cch=%s;",
-		ClaudeCLIVersion(), hex.EncodeToString(build)[:3], cch)
+		ClaudeCLIVersion(), build, cch)
 	billingBlock := map[string]any{"type": "text", "text": billingText}
 
 	switch sys := req["system"].(type) {
@@ -235,6 +239,17 @@ func suffixClaudeToolName(name string) string {
 	return name + claudeToolSuffix
 }
 
+// renameToolReferenceBlock suffixes tool_name (and name, if present) on a tool_reference block
+// if the referenced tool was renamed.
+func renameToolReferenceBlock(block map[string]any, clientToolNames map[string]bool) {
+	if toolName, ok := block["tool_name"].(string); ok && clientToolNames[toolName] {
+		block["tool_name"] = suffixClaudeToolName(toolName)
+	}
+	if name, ok := block["name"].(string); ok && clientToolNames[name] {
+		block["name"] = suffixClaudeToolName(name)
+	}
+}
+
 // cloakClaudeTools mirrors cloakClaudeTools: renames client tools (those
 // without a "type" — server-side built-ins keep reserved names) with the
 // _ide suffix in tools[] and every tool_use block in messages[], and appends
@@ -296,9 +311,13 @@ func cloakClaudeTools(req map[string]any) map[string]string {
 	}
 	req["tools"] = clientDeclarations
 
-	// Rename tool_use blocks in history. Only client tools are renamed:
-	// server-side built-ins (web_search_20250305, ...) keep their reserved
-	// names, and already-suffixed names are not double-suffixed.
+	// Rename tool_use and tool_reference blocks in history. Only client tools
+	// are renamed: server-side built-ins (web_search_20250305, ...) keep their
+	// reserved names, and already-suffixed names are not double-suffixed.
+	// Deferred tool loading returns tool_reference blocks inside tool_result.content
+	// (or as message content parts). They resolve against tools[] by name, so they
+	// must follow the rename or Claude rejects the request:
+	// "400 Tool reference '<name>' not found in available tools".
 	if msgs, ok := req["messages"].([]any); ok {
 		for _, m := range msgs {
 			msg, ok := m.(map[string]any)
@@ -314,11 +333,23 @@ func cloakClaudeTools(req map[string]any) map[string]string {
 				if !ok {
 					continue
 				}
-				if block["type"] != "tool_use" {
-					continue
-				}
-				if name, ok := block["name"].(string); ok && clientToolNames[name] {
-					block["name"] = suffixClaudeToolName(name)
+				switch block["type"] {
+				case "tool_use":
+					if name, ok := block["name"].(string); ok && clientToolNames[name] {
+						block["name"] = suffixClaudeToolName(name)
+					}
+				case "tool_reference":
+					renameToolReferenceBlock(block, clientToolNames)
+				case "tool_result":
+					if nestedList, ok := block["content"].([]any); ok {
+						for _, nc := range nestedList {
+							if nestedBlock, ok := nc.(map[string]any); ok {
+								if nestedBlock["type"] == "tool_reference" {
+									renameToolReferenceBlock(nestedBlock, clientToolNames)
+								}
+							}
+						}
+					}
 				}
 			}
 		}

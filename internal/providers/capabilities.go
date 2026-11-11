@@ -343,6 +343,7 @@ var modelCapabilities = map[string]Capabilities{
 	"glm-4.6v":                     {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "zai"},
 	"glm-4.5v":                     {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "zai"},
 	"deepseek-v4-flash-vision-exp": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek"},
+	"sensenova-6.8-flash":          {Vision: true, Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 131072},
 	"sensenova-6.8-flash-lite":     {Vision: true, Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 131072},
 	"deepseek-v4-vision":           {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek", ThinkingEffortSupported: true},
 	"deepseek-v4.1-flash":          {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek"},
@@ -547,6 +548,7 @@ var providerCapabilities = map[string]map[string]Capabilities{
 		"Qwen3-Embedding-8B":       {},
 		"Qwen3.8-27B":              {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 200000, MaxOutput: 65536},
 		"Qwen3.8-Flash-Next":       {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 262144, MaxOutput: 65536},
+		"sensenova-6.8-flash":      {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
 		"sensenova-6.8-flash-lite": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
 		"sensenova-u1.5-lite":      {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
 		"step-5-preview":           {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 64000},
@@ -784,6 +786,12 @@ var patternCapabilities = []patternCapability{
 	{pattern: "*claude*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-budget"}},
 
 	{pattern: "*gemini*image*", caps: Capabilities{Vision: true, ImageOutput: true, Tools: true}},
+	// Gemini Omni is a reasoning model on the gemini-level wire with thinking
+	// always on. Absent this row the generic *gemini* fallback (Reasoning
+	// false) won, so GetThinkingLevels returned nil and the level never got
+	// clamped. MUST stay above *gemini-4* / *gemini-3.8* for the same reason
+	// as its patternThinking twin.
+	{pattern: "*gemini*omni*", caps: Capabilities{Vision: true, PDF: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false)}},
 	// Gemini 4 (Argon): LOW/MEDIUM/HIGH only — no "minimal" tier, no
 	// thinkingBudget, and thinking cannot be disabled. Same row upstream's
 	// PATTERN_CAPABILITIES carries; without it "gemini-argon" matched nothing
@@ -910,6 +918,7 @@ var patternCapabilities = []patternCapability{
 	{pattern: "*llama*", caps: Capabilities{Tools: true}},
 
 	{pattern: "*codestral*", caps: Capabilities{Tools: true}},
+	{pattern: "*devstral*", caps: Capabilities{Vision: true, Tools: true}},
 	{pattern: "*mistral-large*", caps: Capabilities{Vision: true, Tools: true}},
 	{pattern: "*mistral*", caps: Capabilities{Tools: true}},
 
@@ -1167,6 +1176,34 @@ func GetCapabilitiesForModel(provider, model string) Capabilities {
 		res.Vision = true
 	}
 
+	// A speech-synthesis model emits audio, and models_list's buildModalities
+	// derives output_modalities from this flag alone — so a TTS model without
+	// it is published as text-only and never reaches the audio lane, while its
+	// endpoint happily answers audio/wav.
+	//
+	// The name signal does the work. The registry's per-provider service kind
+	// is the more authoritative source but cannot stand alone: it needs an
+	// exact ProviderModelKinds[provider][model] hit, which a custom provider
+	// node never has (no registry entry, no alias), so the reported case —
+	// studio/gemini-3.8-flash-tts on an operator-defined node — is reachable
+	// by name only. The same gap hits a builtin that carries a TTS id without
+	// declaring its kind (vertex, ag) and the eight mimo pairs on
+	// xiaomi-tokenplan / xmtp.
+	//
+	// The kind check is kept as a fallback for a classified id whose name
+	// carries no signal at all. Removing it breaks no test today, so it is
+	// deliberate slack, not redundancy — ttsName would have nothing to match
+	// in a future id like "sonic-2".
+	//
+	// Only ever turns audio output ON, like the vision rule above. It must stay
+	// that narrow: upstream advertises thinking levels for its TTS models
+	// (13 pairs in testdata/thinking_levels.json), so clearing Reasoning or the
+	// thinking format here would break that parity.
+	if !res.AudioOutput &&
+		(GetProviderModelKind(provider, model) == serviceKindTTS || looksLikeTTSModel(baseModel)) {
+		res.AudioOutput = true
+	}
+
 	capsCacheMu.Lock()
 	capsCache[key] = res
 	capsCacheMu.Unlock()
@@ -1273,7 +1310,8 @@ type CapabilitiesDetail struct {
 // (aggregateComboCapabilities). It is deliberately a different type: the union
 // drops thinkingEffortSupported, booleans fold with `some` — except tools, which
 // requires *every* leaf to support it — the thinking fields come from the first
-// leaf, the context window is the narrowest leaf and maxOutput the widest.
+// leaf, the context window is the narrowest leaf and maxOutput the narrowest
+// positive leaf (zero/unbounded never wins unless every leaf is unbounded).
 type ComboCapabilities struct {
 	Vision             bool    `json:"vision"`
 	PDF                bool    `json:"pdf"`
@@ -1316,10 +1354,10 @@ func AggregateComboCapabilities(leaves []CapabilitiesDetail) (ComboCapabilities,
 		merged.AudioOutput = merged.AudioOutput || leaf.AudioOutput
 		merged.Search = merged.Search || leaf.Search
 		merged.Tools = merged.Tools && leaf.Tools
-		if leaf.ContextWindow < merged.ContextWindow {
+		if leaf.ContextWindow > 0 && (merged.ContextWindow == 0 || leaf.ContextWindow < merged.ContextWindow) {
 			merged.ContextWindow = leaf.ContextWindow
 		}
-		if leaf.MaxOutput > merged.MaxOutput {
+		if leaf.MaxOutput > 0 && (merged.MaxOutput == 0 || leaf.MaxOutput < merged.MaxOutput) {
 			merged.MaxOutput = leaf.MaxOutput
 		}
 	}

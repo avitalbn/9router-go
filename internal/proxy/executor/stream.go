@@ -20,19 +20,31 @@ import (
 // ---- Codex Responses API SSE → Chat SSE ----
 
 type CodexStreamState struct {
-	CurrentEvent        string
-	model               string
-	OutputLength        int
-	ToolCallCount       int
-	Completed           bool   // response.completed seen — finish chunk already emitted
-	UpstreamErr         []byte // raw upstream {"type":"error",...} event, if any
-	CurrentToolCallID   string
-	ToolCallIdx         map[string]int
-	ToolCallNames       map[string]string
-	ToolCallArgs        map[string]string
-	ItemIDToCallID      map[string]string
-	OutputIndexToCallID map[int]string
-	Usage               *translator.OpenAIUsage
+	CurrentEvent      string
+	model             string // fork: per-chunk model field
+	OutputLength      int
+	ToolCallCount     int
+	Completed         bool   // response.completed seen — finish chunk already emitted
+	UpstreamErr       []byte // raw upstream {"type":"error",...} event, if any
+	CurrentToolCallID string
+	ToolCallIdx       map[string]int
+	ToolCallNames     map[string]string
+	ToolCallArgs      map[int]string // indexed by chat tool-call index
+	ItemIDToIdx       map[string]int // Responses item_id → chat tool-call index
+	OutputIndexToIdx  map[int]int    // Responses output_index → chat tool-call index
+	AnnouncedToolIDs  map[int]string // chat idx → call_id announced to client
+	Usage             *translator.OpenAIUsage
+}
+
+// Responses output indexes include non-tool items (e.g. reasoning), so they
+// must be mapped to chat tool indexes rather than used directly.
+func (state *CodexStreamState) toolIndexForOutput(event map[string]any) (int, bool) {
+	outputIndex, ok := event["output_index"].(float64)
+	if !ok {
+		return 0, false
+	}
+	idx, ok := state.OutputIndexToIdx[int(outputIndex)]
+	return idx, ok
 }
 
 func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, created int64) []string {
@@ -130,8 +142,13 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 			if state.ToolCallNames == nil {
 				state.ToolCallNames = make(map[string]string)
 			}
+
 			state.ToolCallNames[callID] = name
 			state.CurrentToolCallID = callID
+			if state.AnnouncedToolIDs == nil {
+				state.AnnouncedToolIDs = make(map[int]string)
+			}
+			state.AnnouncedToolIDs[idx] = callID
 
 			chunk := map[string]any{
 				"id":      responseID,
@@ -171,9 +188,9 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 		callID, idx := toolCallIndex(state, event, itemID, callID)
 
 		if state.ToolCallArgs == nil {
-			state.ToolCallArgs = make(map[string]string)
+			state.ToolCallArgs = make(map[int]string)
 		}
-		state.ToolCallArgs[callID] += delta
+		state.ToolCallArgs[idx] += delta
 		fnMap := map[string]any{
 			"arguments": delta,
 		}
@@ -196,9 +213,11 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 		}
 		tcMap := map[string]any{
 			"index":    idx,
-			"id":       callID,
 			"type":     "function",
 			"function": fnMap,
+		}
+		if callID != "" && state.AnnouncedToolIDs[idx] == "" {
+			tcMap["id"] = callID
 		}
 
 		chunk := map[string]any{
@@ -241,14 +260,22 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 		if eventType == "response.output_item.done" && state.CurrentToolCallID == callID {
 			state.CurrentToolCallID = ""
 		}
-		// Both done events carry snapshots, not deltas. Emit only the suffix
-		// missing from this call's buffer; a done-only stream must not send
-		// the same JSON again when output_item.done follows arguments.done.
-		existing := state.ToolCallArgs[callID]
-		if strings.HasPrefix(existing, args) {
-			args = ""
-		} else if strings.HasPrefix(args, existing) {
-			args = args[len(existing):]
+		// Snapshots are not deltas. Correlate by the tool index used for
+		// emission: events may omit call_id and carry only item_id or
+		// output_index. Incompatible bytes cannot replace what was already
+		// sent to the client.
+		if state.ToolCallArgs == nil {
+			state.ToolCallArgs = make(map[int]string)
+		}
+		existing := state.ToolCallArgs[idx]
+		if existing != "" {
+			if !strings.HasPrefix(args, existing) {
+				return nil
+			}
+			args = strings.TrimPrefix(args, existing)
+			if args == "" {
+				return nil
+			}
 		}
 		fnMapDone := map[string]any{"arguments": args}
 		if name != "" && state.ToolCallNames[callID] == "" {
@@ -263,9 +290,15 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 		}
 		if args != "" {
 			if state.ToolCallArgs == nil {
-				state.ToolCallArgs = make(map[string]string)
+				state.ToolCallArgs = make(map[int]string)
 			}
-			state.ToolCallArgs[callID] += args
+			state.ToolCallArgs[idx] += args
+		}
+		toolCall := map[string]any{
+			"index": idx, "type": "function", "function": fnMapDone,
+		}
+		if callID != "" && state.AnnouncedToolIDs[idx] == "" {
+			toolCall["id"] = callID
 		}
 		chunk := map[string]any{
 			"id":      responseID,
@@ -275,12 +308,7 @@ func ProcessCodexEvent(data string, state *CodexStreamState, responseID string, 
 			"choices": []map[string]any{{
 				"index": 0,
 				"delta": map[string]any{
-					"tool_calls": []map[string]any{{
-						"index":    idx,
-						"id":       callID,
-						"type":     "function",
-						"function": fnMapDone,
-					}},
+					"tool_calls": []map[string]any{toolCall},
 				},
 			}},
 		}
@@ -359,51 +387,77 @@ func codexUsageMap(resp map[string]any) map[string]any {
 	return chunkUsage
 }
 
-// toolCallIndex keeps the first call id stable for a Responses output slot.
-// Copilot may re-encode item_id on each event; output_index still identifies the
-// same call. Item aliases also support streams that omit output_index.
+// toolCallIndex resolves a Responses event to the chat tool-call (callID, idx)
+// pair. It consults output_index first (most stable across rotating item IDs),
+// then item_id, then call_id. On first sight it assigns a new chat index and
+// registers all three lookup maps. If the slot was already announced to the
+// client (via output_item.added) the originally sent callID is recovered from
+// AnnouncedToolIDs so every subsequent chunk carries the same identity.
 func toolCallIndex(state *CodexStreamState, event map[string]any, itemID, callID string) (string, int) {
-	outputIndex, hasOutputIndex := event["output_index"].(float64)
-	var canonicalID string
-	if hasOutputIndex {
-		canonicalID = state.OutputIndexToCallID[int(outputIndex)]
-	}
-	if canonicalID == "" {
-		canonicalID = state.ItemIDToCallID[itemID]
-	}
-	if canonicalID != "" {
-		callID = canonicalID
-	}
-	if callID == "" {
-		callID = itemID
-	}
-	if callID == "" && !hasOutputIndex {
-		callID = state.CurrentToolCallID
-	}
-	if callID == "" {
-		callID = fmt.Sprintf("call_%d", state.ToolCallCount)
-	}
-	if state.ToolCallIdx == nil {
-		state.ToolCallIdx = make(map[string]int)
-	}
-	if hasOutputIndex {
-		if state.OutputIndexToCallID == nil {
-			state.OutputIndexToCallID = make(map[int]string)
+	var idx int
+	var ok bool
+
+	// output_index is the most stable key: non-tool output items (e.g. reasoning)
+	// share the slot space, so we map output_index → chat index separately.
+	if idx, ok = state.toolIndexForOutput(event); !ok {
+		if itemID != "" && state.ItemIDToIdx != nil {
+			idx, ok = state.ItemIDToIdx[itemID]
 		}
-		state.OutputIndexToCallID[int(outputIndex)] = callID
+	}
+	if !ok && callID != "" && state.ToolCallIdx != nil {
+		idx, ok = state.ToolCallIdx[callID]
+	}
+	if !ok {
+		// First sight: assign a new chat index for this slot.
+		if callID == "" {
+			callID = itemID
+		}
+		_, hasOutputIndex := event["output_index"].(float64)
+		if callID == "" && !hasOutputIndex {
+			callID = state.CurrentToolCallID
+		}
+		if callID == "" {
+			callID = fmt.Sprintf("call_%d", state.ToolCallCount)
+		}
+		if state.ToolCallIdx == nil {
+			state.ToolCallIdx = make(map[string]int)
+		}
+		if existing, exists := state.ToolCallIdx[callID]; exists {
+			idx = existing
+		} else {
+			idx = state.ToolCallCount
+			state.ToolCallIdx[callID] = idx
+			state.ToolCallCount++
+		}
+	}
+
+	// Keep all lookup maps consistent for future events on the same slot.
+	if outputIndex, hasOutputIndex := event["output_index"].(float64); hasOutputIndex {
+		if state.OutputIndexToIdx == nil {
+			state.OutputIndexToIdx = make(map[int]int)
+		}
+		state.OutputIndexToIdx[int(outputIndex)] = idx
 	}
 	if itemID != "" {
-		if state.ItemIDToCallID == nil {
-			state.ItemIDToCallID = make(map[string]string)
+		if state.ItemIDToIdx == nil {
+			state.ItemIDToIdx = make(map[string]int)
 		}
-		state.ItemIDToCallID[itemID] = callID
+		state.ItemIDToIdx[itemID] = idx
 	}
-	if idx, ok := state.ToolCallIdx[callID]; ok {
-		return callID, idx
+	if callID != "" {
+		if state.ToolCallIdx == nil {
+			state.ToolCallIdx = make(map[string]int)
+		}
+		if _, exists := state.ToolCallIdx[callID]; !exists {
+			state.ToolCallIdx[callID] = idx
+		}
 	}
-	idx := state.ToolCallCount
-	state.ToolCallIdx[callID] = idx
-	state.ToolCallCount++
+
+	// Recover the callID that was already announced to the client for this slot
+	// so all subsequent chunks carry the same identity.
+	if announced := state.AnnouncedToolIDs[idx]; announced != "" {
+		return announced, idx
+	}
 	return callID, idx
 }
 
@@ -448,11 +502,9 @@ func handleCodexStream(w http.ResponseWriter, req *Request, upstream io.Reader) 
 
 				out := ProcessCodexEvent(data, state, responseID, created)
 				for _, chunk := range out {
-					if req.TTFT != nil && *req.TTFT == 0 {
-						*req.TTFT = time.Since(req.StartTime).Milliseconds()
-					}
+					markTTFT(req, req.StartTime)
 					if req.ResponseBuf != nil {
-						req.ResponseBuf.Write([]byte(chunk))
+						_, _ = req.ResponseBuf.Write([]byte(chunk))
 					}
 					if _, werr := hw.Write([]byte(chunk)); werr != nil {
 						return
@@ -520,11 +572,9 @@ func handleCodexStream(w http.ResponseWriter, req *Request, upstream io.Reader) 
 				if translated == nil {
 					continue
 				}
-				if req.TTFT != nil && *req.TTFT == 0 {
-					*req.TTFT = time.Since(req.StartTime).Milliseconds()
-				}
+				markTTFT(req, req.StartTime)
 				if req.ResponseBuf != nil {
-					req.ResponseBuf.Write(translated)
+					_, _ = req.ResponseBuf.Write(translated)
 				}
 				if _, werr := hw.Write(translated); werr != nil {
 					return
@@ -819,6 +869,10 @@ func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) e
 					"delta": map[string]any{"content": payload.Content},
 				}},
 			}
+			markTTFT(req, req.StartTime)
+			if req.ResponseBuf != nil {
+				_, _ = fmt.Fprintf(req.ResponseBuf, "data: {\"id\":\"%s\",\"object\":\"chat.completion.chunk\",\"created\":%d,\"choices\":[{\"index\":0,\"delta\":{\"content\":%q},\"finish_reason\":null}]}\n\n", responseID, created, payload.Content)
+			}
 			if err := writeSSE(w, chunk); err != nil {
 				return err
 			}
@@ -844,6 +898,10 @@ func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) e
 					"index": 0,
 					"delta": map[string]any{"reasoning_content": payload.Text},
 				}},
+			}
+			markTTFT(req, req.StartTime)
+			if req.ResponseBuf != nil {
+				_, _ = fmt.Fprintf(req.ResponseBuf, "data: {\"id\":\"%s\",\"object\":\"chat.completion.chunk\",\"created\":%d,\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":%q},\"finish_reason\":null}]}\n\n", responseID, created, payload.Text)
 			}
 			if err := writeSSE(w, chunk); err != nil {
 				return err
@@ -922,6 +980,7 @@ func handleKiroStream(w http.ResponseWriter, req *Request, upstream io.Reader) e
 		}
 		call.emitted = true
 		state.toolCallIndex++
+		markTTFT(req, req.StartTime)
 		if err := writeSSE(w, chunk); err != nil {
 			return err
 		}
@@ -1115,6 +1174,11 @@ func handleCommandcodeStream(w http.ResponseWriter, req *Request, upstream io.Re
 	scanner.Buffer(make([]byte, 256*1024), 256*1024)
 
 	var headersWritten bool
+	// semanticToken reports whether a chunk carries a real content or
+	// reasoning delta, rather than an empty role-only or finish frame.
+	semanticToken := func(chunk string) bool {
+		return strings.Contains(chunk, `"content"`) || strings.Contains(chunk, `"reasoning_content"`)
+	}
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -1179,7 +1243,13 @@ func handleCommandcodeStream(w http.ResponseWriter, req *Request, upstream io.Re
 
 		flusher, _ := w.(http.Flusher)
 		for _, chunk := range chunks {
-			if _, err := w.Write([]byte(fmt.Sprintf("data: %s\n\n", chunk))); err != nil {
+			if semanticToken(chunk) {
+				markTTFT(req, req.StartTime)
+			}
+			if req.ResponseBuf != nil {
+				_, _ = fmt.Fprintf(req.ResponseBuf, "data: %s\n\n", chunk)
+			}
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", chunk); err != nil {
 				return err
 			}
 			if flusher != nil {

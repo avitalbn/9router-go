@@ -9,6 +9,7 @@ import (
 	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/promptcache"
 	"9router/proxy/internal/providers"
+	"9router/proxy/internal/proxy/executor"
 	"9router/proxy/internal/semanticcache"
 	"9router/proxy/internal/thinking"
 	"9router/proxy/internal/translator"
@@ -79,6 +80,20 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Pre-filter on raw body bytes: only decode/inspect conversation history
+	// for stalled tool loops when the request actually carries tool calls.
+	// Keeps every non-tool request zero-cost (per §4.A, §4.G).
+	if bytes.Contains(body, []byte(`"tool_calls"`)) || bytes.Contains(body, []byte(`"tool_use"`)) {
+		var msgBody struct {
+			Messages []map[string]any `json:"messages"`
+		}
+		if err := json.Unmarshal(body, &msgBody); err == nil {
+			if h.CheckStalledToolLoopOpenAI(w, msgBody.Messages, reqBody.Model, reqBody.Stream) {
+				return
+			}
+		}
+	}
+
 	// Per-key model policy runs after the bypass path — synthetic warmup and
 	// keepalive traffic never reaches a provider, so it is not an access
 	// request — and before resolveModel, so a denied model never reaches
@@ -88,6 +103,7 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
+	ctx = executor.WithCodexLiteHeader(ctx, r.Header.Get(executor.CodexResponsesLiteHeader))
 	// X-9Router-Token-Saver: off|0|false|bypass opts the whole request out of
 	// every token saver; the flag travels on ctx to applyTokenSavers.
 	if isTokenSaverBypassValue(r.Header.Get("X-9Router-Token-Saver")) {
@@ -354,6 +370,20 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	// selection.
 	if !h.enforceModelAccess(w, r, modelName) {
 		return
+	}
+
+	// Pre-filter on raw body bytes: only decode/inspect conversation history
+	// for stalled tool loops when the request actually carries tool calls.
+	// Keeps every non-tool request zero-cost (per §4.A, §4.G).
+	if bytes.Contains(body, []byte(`"tool_calls"`)) || bytes.Contains(body, []byte(`"tool_use"`)) {
+		var msgBody struct {
+			Messages []map[string]any `json:"messages"`
+		}
+		if err := json.Unmarshal(body, &msgBody); err == nil {
+			if h.CheckStalledToolLoopClaude(w, msgBody.Messages, reqBody.Model, reqBody.Stream) {
+				return
+			}
+		}
 	}
 
 	modelInfo, err := h.resolveModel(modelName)

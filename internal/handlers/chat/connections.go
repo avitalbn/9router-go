@@ -242,6 +242,7 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 	var conn *models.ProviderConnection
 	var err error
 	isProbe := handlerutil.IsProbeContext(ctx)
+	serviceKind := handlerutil.GetServiceKind(ctx)
 
 	if connectionID != "" {
 		conn, err = h.Repo.GetProviderConnectionByID(connectionID)
@@ -264,11 +265,22 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 		// row never matches and the request falls through to the configured
 		// strategy. Honouring the pin unconditionally made the dashboard's
 		// enable/disable toggle a no-op for every pinned request.
-		ineligible, reason := h.pinnedConnectionIneligible(conn, excludeIDs, model)
+		ineligible, reason := h.pinnedConnectionIneligible(conn, excludeIDs, model, serviceKind)
 		if ineligible && isProbe && conn.IsActive == 1 && !slices.Contains(excludeIDs, conn.ID) {
-			if strings.HasPrefix(reason, "account cooldown") || strings.HasPrefix(reason, "model lock") || reason == "quota cache" {
+			// A reauth_required account whose park has run out returns as a
+			// normal probe candidate; while parked it stays ineligible.
+			parked := false
+			if db.ConnectionRequiresReauth(conn.Data) {
+				if until, ok := db.ConnectionOAuthLockUntil(conn.Data); ok && until.After(time.Now()) {
+					parked = true
+				}
+			}
+			if !parked &&
+				(strings.HasPrefix(reason, "account cooldown") || strings.HasPrefix(reason, "model lock") || reason == "quota cache") {
 				// Probes bypass cooldown / locks to test actual upstream reachability,
 				// but must still honor model enablement, disabled accounts, and strict assignment.
+				// A parked dead grant stays ineligible even under a probe: the
+				// upstream answer is already known (401 invalid access token).
 				ineligible = false
 			}
 		}
@@ -339,6 +351,17 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 			return nil, nil, fmt.Errorf("no connection for provider %s has model %s enabled", provider, model)
 		}
 
+		// Service-kind and media eligibility filter: connections with
+		// media disabled are excluded from media requests (image, video,
+		// tts, stt, embedding, search, fetch). Text chat requests (empty
+		// serviceKind) keep all active connections.
+		if serviceKind != "" {
+			connections = filterConnectionsForServiceKind(connections, serviceKind)
+			if len(connections) == 0 {
+				return nil, nil, fmt.Errorf("no active connections for provider: %s", provider)
+			}
+		}
+
 		// Node state before rotation: a node whose contract has ended, or whose
 		// lifetime token quota is spent, must not receive the request at all — and
 		// the verdict comes from the same helper the dispatch path asks, so a node
@@ -383,9 +406,11 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 					}
 				}
 				if boundConn != nil && !excludeSet[boundConn.ID] && codexAccountServesModel(boundConn, model) {
-					if !h.connectionModelBlocked(boundConn, provider, model) {
-						if until, ok := db.ConnectionBlockedUntil(boundConn.Data); !ok || !until.After(now) {
-							conn = boundConn
+					if serviceKind == "" || boundConn.IsMediaActive(serviceKind) {
+						if !h.connectionModelBlocked(boundConn, provider, model) {
+							if until, ok := db.ConnectionBlockedUntil(boundConn.Data); !ok || !until.After(now) {
+								conn = boundConn
+							}
 						}
 					}
 				}
@@ -421,6 +446,21 @@ func (h *ChatHandler) getBestConnectionWithContext(ctx context.Context, provider
 				// Per-model lock and quota cache first: an account parked for
 				// this model carries no cooldown to shorten, so it must not enter
 				// the forced pool either (h.connectionModelBlocked).
+				// A parked dead grant is terminal only while its park is active:
+				// once oauthLockedUntil runs out the account returns as a
+				// normal candidate (the park is a cooldown, not a disable).
+				// While parked even a probe (which otherwise bypasses cooldowns
+				// to test live reachability) must not re-pick it — the upstream
+				// answer is already known (401 invalid token).
+				if db.ConnectionRequiresReauth(c.Data) {
+					if until, ok := db.ConnectionOAuthLockUntil(c.Data); ok && until.After(now) {
+						inCooldown = append(inCooldown, c)
+						if cooldownUntil.IsZero() || until.Before(cooldownUntil) {
+							cooldownUntil = until
+						}
+						continue
+					}
+				}
 				if !isProbe {
 					if h.connectionModelBlocked(c, provider, model) {
 						continue
@@ -558,7 +598,7 @@ func (h *ChatHandler) applyProviderProxyPool(connData *ConnectionData, provider 
 // before it looks for a preferred connection (src/sse/services/auth.js:100-148):
 // disabled rows, explicitly excluded rows, active model locks, and connections
 // the provider's strict model assignment does not bind to this model.
-func (h *ChatHandler) pinnedConnectionIneligible(conn *models.ProviderConnection, excludeIDs []string, model string) (bool, string) {
+func (h *ChatHandler) pinnedConnectionIneligible(conn *models.ProviderConnection, excludeIDs []string, model string, serviceKind ...string) (bool, string) {
 	if conn == nil {
 		return true, "nil connection"
 	}
@@ -567,6 +607,12 @@ func (h *ChatHandler) pinnedConnectionIneligible(conn *models.ProviderConnection
 	}
 	if slices.Contains(excludeIDs, conn.ID) {
 		return true, "excluded"
+	}
+	if len(serviceKind) > 0 && serviceKind[0] != "" {
+		kind := serviceKind[0]
+		if !conn.IsMediaActive(kind) {
+			return true, "media disabled for " + kind
+		}
 	}
 	if until, ok := db.ConnectionBlockedUntil(conn.Data); ok && until.After(time.Now()) {
 		return true, "account cooldown until " + until.UTC().Format(time.RFC3339)
@@ -642,6 +688,20 @@ func filterConnectionsByEnabledModels(provider string, conns []*models.ProviderC
 	return kept
 }
 
+// filterConnectionsForServiceKind keeps only connections whose media capability allows serviceKind.
+func filterConnectionsForServiceKind(conns []*models.ProviderConnection, serviceKind string) []*models.ProviderConnection {
+	if serviceKind == "" {
+		return conns
+	}
+	out := make([]*models.ProviderConnection, 0, len(conns))
+	for _, c := range conns {
+		if c != nil && c.IsMediaActive(serviceKind) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // quotaCacheBlocked reports whether a provider's in-memory quota cache says
 // this connection must not serve the request. Each provider keeps its own
 // cache, so this dispatches per provider and never crosses them (AGENTS.md
@@ -690,7 +750,7 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 		//
 		// A custom node's baseUrl is a PREFIX rather than an endpoint the
 		// operator named, so it is completed by a different rule (#768).
-		baseURL := compatibleNodeLaneURL(provider, connectionAPIType(connData), connData.BaseURL)
+		baseURL := CompatibleNodeLaneURL(provider, connectionAPIType(connData), connData.BaseURL)
 		if cfg, ok := providers.KnownProviders[provider]; ok {
 			cloned := cfg
 			cloned.BaseURL = baseURL
@@ -713,7 +773,7 @@ func (h *ChatHandler) getProviderConfig(provider string, connData *ConnectionDat
 		}
 		if node != nil && nodeData != nil && nodeData.BaseURL != "" {
 			baseCfg = &providers.ProviderConfig{
-				BaseURL:    compatibleNodeLaneURL(provider, nodeData.APIType, nodeData.BaseURL),
+				BaseURL:    CompatibleNodeLaneURL(provider, nodeData.APIType, nodeData.BaseURL),
 				AuthHeader: constants.HeaderAuthorization,
 				AuthScheme: constants.AuthSchemeBearer,
 			}
@@ -855,9 +915,9 @@ func (h *ChatHandler) withClineIdentity(provider string, cfg *providers.Provider
 // The two rules stay separate for that reason. The bare-host and /v1 shapes
 // resolve exactly as they did through chatCompletionsURL, so a node that
 // already worked keeps the URL it had.
-func compatibleNodeLaneURL(provider, apiType, baseURL string) string {
+func CompatibleNodeLaneURL(provider, apiType, baseURL string) string {
 	if !isCompatibleNodeProvider(provider) {
-		return chatCompletionsURL(baseURL)
+		return ChatCompletionsURL(baseURL)
 	}
 	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if base == "" {
@@ -984,22 +1044,29 @@ func connectionAPIType(connData *ConnectionData) string {
 	return apiType
 }
 
-// chatCompletionsURL completes a configured endpoint into the chat-completions
+// ChatCompletionsURL completes a configured endpoint into the chat-completions
 // route, and leaves one that already names a route untouched.
+//
+// Exported because the dashboard's node/key probes run the same request the
+// chat path will run, and a probe that completes the base URL differently
+// reports a working node as broken (or the reverse).
 //
 // A configured endpoint arrives in one of two shapes: the full route, or a bare
 // host — the compatible-node baseUrl and the Ollama Local host field both take
-// this form, and a dotted IP is the common case
-// ("http://192.168.1.10:11434"). A bare host names no route upstream, so the
-// gateway's /v1 is what makes it a chat endpoint.
+// this form, and a dotted IP is the common case ("http://192.168.1.10:11434").
+// A bare host names no route upstream, so the gateway's /v1 is what makes it a
+// chat endpoint.
 //
 // Detection is by shape, not by guessing whether the last path segment looks
 // like a filename: an early version did that and exempted exactly the dotted-IP
-// host it existed to fix. A URL whose path is only a version prefix (/v1, and
-// the /v1beta Google uses) is that prefix plus the route; a path that carries
-// any segment beyond it is taken to be an endpoint the operator named, and is
-// left alone rather than having /v1 appended behind it.
-func chatCompletionsURL(baseURL string) string {
+// host it existed to fix. A URL whose path ends in a version prefix (/v1, and
+// the /v1beta Google uses) is that prefix plus the route. The version may sit
+// behind a vendor segment — an OpenAI-compatible provider publishes its base as
+// "https://anyrouter.dev/api/v1" — so the trailing segment decides, not the
+// whole path; a path that ends in any other segment is taken to be an endpoint
+// the operator chose, and is left alone rather than having /v1 appended behind
+// it.
+func ChatCompletionsURL(baseURL string) string {
 	url := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if url == "" {
 		return baseURL
@@ -1012,24 +1079,30 @@ func chatCompletionsURL(baseURL string) string {
 			return url
 		}
 	}
-	// Split off the scheme and authority, then decide from the path alone: no
-	// path at all, or only a version prefix, means nothing named an endpoint and
-	// the route is appended to the prefix that is there.
+	// Split off the scheme and authority, then decide from the path's last
+	// segment: no path at all, or a path ending in a version prefix, means
+	// nothing named an endpoint and the route is appended behind the prefix
+	// that is there.
 	_, rest, found := strings.Cut(url, "://")
 	if !found {
 		return url + "/v1/chat/completions"
 	}
 	_, path, _ := strings.Cut(rest, "/")
-	switch trimmed := strings.Trim(path, "/"); {
+	trimmed := strings.Trim(path, "/")
+	last := ""
+	if trimmed != "" {
+		last = trimmed[strings.LastIndex(trimmed, "/")+1:]
+	}
+	switch {
 	case trimmed == "":
 		return url + "/v1/chat/completions"
-	case isVersionPrefix(trimmed):
-		// Already versioned ("https://host/v1"): the lane is the prefix plus the
-		// route, not a second prefix.
+	case isVersionPrefix(last):
+		// Already versioned ("https://host/v1", "https://host/api/v1"): the
+		// lane is the prefix plus the route, not a second prefix.
 		return url + "/chat/completions"
 	default:
-		// A path carrying a segment beyond the prefix names an endpoint the
-		// operator chose; appending behind it would only produce a 404.
+		// A path ending in a named segment is an endpoint the operator chose;
+		// appending behind it would only produce a 404.
 		return url
 	}
 }

@@ -156,6 +156,7 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Post("/keys/{id}/rotate", h.HandleRotateApiKey)
 		r.Get("/keys/{id}/models", h.HandleGetApiKeyModels)
 		r.Put("/keys/{id}/models", h.HandleSetApiKeyModels)
+		r.Get("/keys/{id}/budget", h.HandleGetApiKeyBudget)
 		r.Put("/keys/{id}", h.HandleUpdateApiKey)
 
 		// F-3 Plans: reusable policy templates the keys inherit from.
@@ -256,6 +257,10 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		// GLM Reset Cards (Z.ai international). Only for provider == "glm".
 		r.Get("/usage/{connectionId}/glm-reset-cards", h.HandleGetGLMResetCards)
 		r.Post("/usage/{connectionId}/glm-reset-cards", h.HandleRedeemGLMResetCard)
+
+		// Claude reset credits (cedar_ember grants).
+		r.Get("/usage/{connectionId}/claude-reset-credits", h.HandleListClaudeResetCredits)
+		r.Post("/usage/{connectionId}/claude-reset-credits/consume", h.HandleConsumeClaudeResetCredit)
 
 		// Cache Analytics & Management
 		r.Get("/resilience", h.HandleGetResilience)

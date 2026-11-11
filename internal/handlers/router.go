@@ -174,6 +174,7 @@ func SetupRoutes(r interface {
 	r.Delete("/headroom/extras", headroomH.HandleHeadroomExtras)
 	r.HandleFunc("/headroom/proxy", headroomH.HandleHeadroomProxy)
 	r.HandleFunc("/headroom/proxy/*", headroomH.HandleHeadroomProxy)
+	r.Post("/mcp", headroomH.HandleMCP)
 
 	r.Post("/api/headroom/start", headroomH.HandleHeadroomStart)
 	r.Post("/api/headroom/stop", headroomH.HandleHeadroomStop)
@@ -209,6 +210,16 @@ func SetupRoutes(r interface {
 	// GLM Reset Cards (Z.ai international)
 	r.Get("/api/usage/{connectionId}/glm-reset-cards", dashH.HandleGetGLMResetCards)
 	r.Post("/api/usage/{connectionId}/glm-reset-cards", dashH.HandleRedeemGLMResetCard)
+	// Claude reset credits (cedar_ember grants)
+	r.Get("/api/usage/{connectionId}/claude-reset-credits", dashH.HandleListClaudeResetCredits)
+	r.Post("/api/usage/{connectionId}/claude-reset-credits/consume", dashH.HandleConsumeClaudeResetCredit)
+
+	// Free-pi ad surface. The creative is served to the dashboard, and the
+	// impression is reported only from the client's render event — an
+	// impression for an ad nobody saw is a false report to the advertiser whose
+	// spend funds the inference (see free_pi_ads.go).
+	r.Get("/api/free-pi/ad", dashH.HandleGetFreePiAd)
+	r.Post("/api/free-pi/ad/impression", dashH.HandleFreePiImpression)
 
 	// Debug Tracing Domain (p50/p95 latency per provider+model)
 	r.Get("/debug/traces", HandleDebugTraces)
@@ -283,6 +294,16 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	// GLM Reset Cards (Z.ai international)
 	r.Get("/api/usage/{connectionId}/glm-reset-cards", dashH.HandleGetGLMResetCards)
 	r.Post("/api/usage/{connectionId}/glm-reset-cards", dashH.HandleRedeemGLMResetCard)
+	// Claude reset credits (cedar_ember grants)
+	r.Get("/api/usage/{connectionId}/claude-reset-credits", dashH.HandleListClaudeResetCredits)
+	r.Post("/api/usage/{connectionId}/claude-reset-credits/consume", dashH.HandleConsumeClaudeResetCredit)
+
+	// Free-pi ad surface. The creative is served to the dashboard, and the
+	// impression is reported only from the client's render event — an
+	// impression for an ad nobody saw is a false report to the advertiser whose
+	// spend funds the inference (see free_pi_ads.go).
+	r.Get("/api/free-pi/ad", dashH.HandleGetFreePiAd)
+	r.Post("/api/free-pi/ad/impression", dashH.HandleFreePiImpression)
 
 	// Cache Analytics & Management
 	r.Get("/api/cache", dashH.HandleGetCache)
@@ -377,6 +398,7 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Post("/api/keys/{id}/reset-quota", dashH.HandleResetApiKeyQuota)
 	r.Get("/api/keys/{id}/models", dashH.HandleGetApiKeyModels)
 	r.Put("/api/keys/{id}/models", dashH.HandleSetApiKeyModels)
+	r.Get("/api/keys/{id}/budget", dashH.HandleGetApiKeyBudget)
 	r.Put("/api/keys/{id}", dashH.HandleUpdateApiKey)
 	r.Get("/api/plans", dashH.HandleListPlans)
 	r.Post("/api/plans", dashH.HandleCreatePlan)
@@ -465,10 +487,11 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Post("/api/tunnel/tailscale-enable", dashH.HandleTailscaleEnable)
 	r.Post("/api/tunnel/tailscale-disable", dashH.HandleTailscaleDisable)
 
-	// Single Sign-On settings checks + SP metadata (profile page)
+	// Single Sign-On settings checks (profile page). The browser login flows and
+	// SP metadata are registered in SetupServerRouter instead: they have to be
+	// reachable before a session exists.
 	r.Post("/api/auth/oidc/test", ssoH.HandleOidcTest)
 	r.Post("/api/auth/saml/test", ssoH.HandleSamlTest)
-	r.Get("/api/auth/saml/metadata", ssoH.HandleSamlMetadata)
 
 	// Mount OAuth routes under dashboard auth so web dashboard can initiate and exchange tokens
 	oauthH := oauth.NewOAuthHandler(repo)
@@ -509,6 +532,16 @@ func mountOAuthRoutes(r interface {
 	r.Post("/api/oauth/freebuff/poll", oauthH.HandleFreebuffPoll)
 	r.Get("/api/oauth/freebuff/session", oauthH.HandleFreebuffSessionStatus)
 	r.Post("/api/oauth/freebuff/session/switch", oauthH.HandleFreebuffSessionSwitch)
+	// free-pi: GitHub device flow. initiate() refuses to call upstream unless the
+	// request asserts the user accepted the consent screen, and the consent text
+	// itself is served from here rather than duplicated in the SPA.
+	r.Get("/api/oauth/free-pi/consent", oauthH.HandleFreePiConsent)
+	r.Post("/api/oauth/free-pi/initiate", oauthH.HandleFreePiInitiate)
+	r.Post("/api/oauth/free-pi/poll", oauthH.HandleFreePiPoll)
+	// The dashboard equivalent of free-pi-cli's /close-other-session: a
+	// deliberate user action, because the same call would also end a human's
+	// running CLI session on that account.
+	r.Post("/api/oauth/free-pi/session/reset", oauthH.HandleFreePiSessionReset)
 	r.Get("/api/oauth/antigravity/authorize", oauthH.HandleAntigravityAuthorize)
 	r.Post("/api/oauth/antigravity/exchange", oauthH.HandleAntigravityExchange)
 	r.Get("/api/oauth/cline/authorize", oauthH.HandleClineAuthorize)
@@ -662,6 +695,22 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 	r.Get("/api/auth/status", dashH.HandleAuthStatus)
 	r.Post("/api/auth/login", dashH.HandleAuthLogin)
 	r.Post("/api/auth/logout", dashH.HandleAuthLogout)
+	// Deliberately outside the admin group: this is the recovery path for an
+	// operator who cannot log in, so it cannot require the session it is meant
+	// to restore. The handler refuses anything but a loopback peer on the TCP
+	// connection, and rejects cross-site POSTs.
+	r.Post("/api/auth/reset-password", dashH.HandleResetPassword)
+	// SSO browser login flows and SP metadata. Anonymous by necessity: they
+	// exist precisely for the case where no session exists yet, so mounting
+	// them behind RequireDashboardAuth 401'd the browser at the one moment they
+	// are needed. The settings *tests* stay in the dashboard group, because
+	// those are admin reads that echo the IdP configuration.
+	ssoPubH := sso.NewHandler(repo)
+	r.Get("/api/auth/oidc/start", ssoPubH.HandleOIDCStart)
+	r.Get("/api/auth/oidc/callback", ssoPubH.HandleOIDCCallback)
+	r.Get("/api/auth/saml/start", ssoPubH.HandleSAMLStart)
+	r.Post("/api/auth/saml/acs", ssoPubH.HandleSAMLACS)
+	r.Get("/api/auth/saml/metadata", ssoPubH.HandleSamlMetadata)
 	r.Get("/api/settings/require-login", dashH.HandleRequireLogin)
 	r.Get("/api/tunnel/status", dashH.HandleTunnelStatus)
 
@@ -776,7 +825,21 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) *chat.
 	// before any traffic, so the cache on that instance never fills.
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.RequireDashboardAuth(repo))
+		// The audit trail records every mutating dashboard request (plus the
+		// sensitive reads it names) and serves the log itself. It reads the
+		// recorder from the repo per request — the recorder starts in the boot
+		// hook, after this router exists, so a nil recorder simply means
+		// "auditing off" for a router built by hand in a unit test.
+		r.Use(dashboard.AuditMiddleware(repo))
 		SetupDashboardRoutes(r, repo, engineChatH)
+		// The log itself: list, export, verify the chain, and the recorder
+		// counters. Mounted in this group (not inside SetupDashboardRoutes) so
+		// the endpoints are present in a production boot even though the tests
+		// table RegisterRoutes mounts does not know them.
+		r.Get("/api/audit", dashH.HandleAuditList)
+		r.Get("/api/audit/export", dashH.HandleAuditExport)
+		r.Get("/api/audit/verify", dashH.HandleAuditVerify)
+		r.Get("/api/audit/status", dashH.HandleAuditStatus)
 	})
 
 	// CLI Tools status is a dashboard read: the SPA calls it with the session

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/pricing"
 	"9router/proxy/internal/providers"
@@ -316,6 +317,8 @@ func HandleSuggestedModels(w http.ResponseWriter, r *http.Request) {
 		filter = filterCommandCodeFree
 	case "vercel-free":
 		filter = filterVercelFree
+	case "free-pi":
+		filter = filterFreePi
 	default:
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Unknown filter type")
 		return
@@ -325,7 +328,17 @@ func HandleSuggestedModels(w http.ResponseWriter, r *http.Request) {
 		Timeout:   15 * time.Second,
 		Transport: proxy.NewFallbackTransport(http.DefaultTransport),
 	}
-	resp, err := client.Get(feedURL)
+	// The feed is a provider's public catalogue, and the providers that need
+	// this most are the Cloudflare-fronted ones: Nous Research's edge answers
+	// the Go default identity with HTTP 403 "Attention Required!", which the
+	// >=400 branch below would report as an empty catalogue.
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, feedURL, nil)
+	if err != nil {
+		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"data": []suggestedModel{}})
+		return
+	}
+	req.Header.Set(constants.HeaderUserAgent, constants.DefaultClientUserAgent)
+	resp, err := client.Do(req)
 	if err != nil {
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"data": []suggestedModel{}})
 		return
@@ -364,4 +377,20 @@ func HandleSuggestedModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"data": filter(models)})
+}
+
+func filterFreePi(models []map[string]any) []suggestedModel {
+	out := make([]suggestedModel, 0, len(models))
+	for _, m := range models {
+		id := getString(m, "id")
+		if id == "" {
+			continue
+		}
+		name := getString(m, "name")
+		if name == "" {
+			name = id
+		}
+		out = append(out, suggestedModel{ID: id, Name: name})
+	}
+	return out
 }

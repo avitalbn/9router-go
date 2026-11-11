@@ -11,6 +11,15 @@ Whenever you implement features, fix bugs, add providers, update routing logic, 
 - **Upstream Repository**: `https://github.com/decolua/9router`
 - **Local Clone Path**: `/Users/luqmannul.hakim/htdocs/9router`
 
+### Operator Rule: Upstream-First Incident Handling
+
+For every user-reported malfunction, check whether the latest `luqman-v1/9router-go` upstream already fixes it **before changing fork-specific code**:
+
+1. Fetch upstream and inspect the relevant commits, implementation, and tests. Keep the Go upstream used for fork updates distinct from `decolua/9router`, which remains the behavioral specification.
+2. Update the fork from upstream while preserving its existing custom behavior and any uncommitted work. Hold an already-started local repair separately so it cannot mask the upstream result.
+3. Build and test the updated fork, including the actual reported request or interaction. A newer version number or passing unrelated tests is not evidence that the reported failure is fixed.
+4. Only if the failure remains after that update and verification, report the evidence and offer a fork-specific fix. Do not implement that fix before the upstream-first check.
+
 ### Parity Protocol
 1. **Always Inspect Local Upstream First**:
    - Before writing or modifying logic, inspect the corresponding code in `/Users/luqmannul.hakim/htdocs/9router`.

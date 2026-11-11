@@ -19,6 +19,20 @@ func filterMessages(msgs []any, opts FilterOptions) ([]any, bool) {
 			continue
 		}
 		role, _ := msg["role"].(string)
+		// Some OpenAI-compatible providers deserialize `reasoning` and
+		// `reasoning_content` as aliases of one field. When an assistant
+		// message carries both, keep the explicit canonical `reasoning_content`
+		// and drop only the colliding string `reasoning`. Structured reasoning
+		// (map/array) is preserved, and a standalone `reasoning` is untouched.
+		if role == "assistant" {
+			if _, isStr := msg["reasoning"].(string); isStr {
+				if _, hasRC := msg["reasoning_content"]; hasRC {
+					msg = shallowCopy(msg)
+					delete(msg, "reasoning")
+					changed = true
+				}
+			}
+		}
 		if opts.StrictReasoningRemoving && role == "assistant" {
 			copied := false
 			for _, key := range []string{"reasoning_content", "reasoning", "reasoning_details"} {
@@ -42,11 +56,25 @@ func filterMessages(msgs []any, opts FilterOptions) ([]any, bool) {
 		// calls keeps its tool_calls — both are the OpenAI contract, and
 		// upstream keeps them as-is for the same reason.
 		if role == "tool" {
+			if opts.FlattenContent {
+				if parts, ok := msg["content"].([]any); ok {
+					msg = shallowCopy(msg)
+					msg["content"] = flattenContentParts(parts)
+					changed = true
+				}
+			}
 			out = append(out, msg)
 			continue
 		}
 		if role == "assistant" {
 			if _, has := msg["tool_calls"]; has {
+				if opts.FlattenContent {
+					if parts, ok := msg["content"].([]any); ok {
+						msg = shallowCopy(msg)
+						msg["content"] = flattenContentParts(parts)
+						changed = true
+					}
+				}
 				out = append(out, msg)
 				continue
 			}
@@ -56,6 +84,13 @@ func filterMessages(msgs []any, opts FilterOptions) ([]any, bool) {
 			continue
 		}
 		if parts, ok := msg["content"].([]any); ok {
+			if opts.FlattenContent {
+				msg = shallowCopy(msg)
+				msg["content"] = flattenContentParts(parts)
+				changed = true
+				out = append(out, msg)
+				continue
+			}
 			filtered, blocksChanged := filterContentBlocks(parts, opts)
 			if blocksChanged {
 				msg = shallowCopy(msg)
@@ -120,6 +155,27 @@ func filterContentBlocks(parts []any, opts FilterOptions) ([]any, bool) {
 		changed = true
 	}
 	return filtered, changed
+}
+
+// flattenContentParts joins the text blocks of an array content into a single
+// string, matching upstream open-sse/translator/concerns/paramSupport.js
+// STRIP_RULES for cloudflare-ai:
+//
+//	msg.content.map(b => (b && b.type === 'text' && typeof b.text === 'string') ? b.text : '').join('')
+//
+// Only blocks with type == "text" and a string text field contribute; others contribute nothing.
+func flattenContentParts(parts []any) string {
+	var sb strings.Builder
+	for _, p := range parts {
+		if block, ok := p.(map[string]any); ok {
+			if typ, _ := block["type"].(string); typ == openaiBlockText {
+				if text, ok := block["text"].(string); ok {
+					sb.WriteString(text)
+				}
+			}
+		}
+	}
+	return sb.String()
 }
 
 // pruneEmptyMessages drops the turns that carry no content, but never a tool

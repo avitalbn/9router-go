@@ -6,10 +6,13 @@ import "strings"
 const CodexAutoPingModel = "gpt-5.6-terra"
 
 // CodexImagesMainModel is the main model answering Codex tool-call image
-// requests. It only drives the image_generation tool call: gpt-5.6-sol is
-// rejected for ChatGPT Go accounts ("model is not supported when using Codex
-// with a ChatGPT account"); gpt-5.6-terra is accepted (upstream b08f12d5).
-const CodexImagesMainModel = "gpt-5.6-terra"
+// requests. It hosts the image_generation tool (gpt-6-sol); if rejected by a
+// ChatGPT account, it falls back to gpt-5.6-terra (upstream PR #5546).
+const CodexImagesMainModel = "gpt-6-sol"
+
+// CodexImagesFallbackModel is the model used when a ChatGPT account rejects
+// gpt-6-sol for image tool hosting (upstream PR #5546).
+const CodexImagesFallbackModel = "gpt-5.6-terra"
 
 // ProviderModels maps provider aliases/IDs to their supported models in 9router.
 // Ported verbatim from open-sse/providers/registry (registry/{id}.js models arrays,
@@ -64,7 +67,7 @@ var ProviderModels = map[string][]string{
 	// absent from backend-api/codex/models for ChatGPT accounts, so they answer HTTP 400 (#4202, #4848).
 	// gpt-daybreak-blue-latest and gpt-reserve replaced them, confirmed live on the same endpoint. The [1m] ids
 	// are the extended-context variants; they map to their base id upstream via `upstreamModelId`.
-	"codex":       {"gpt-6.1-sol", "gpt-6-astra", "gpt-6-astra[1m]", "gpt-6-sol", "gpt-6-sol[1m]", "gpt-6-luna", "gpt-6-luna[1m]", "gpt-5.6-sol", "gpt-5.6-sol[1m]", "gpt-5.6-sol-review", "gpt-5.6-terra", "gpt-5.6-terra[1m]", "gpt-5.6-terra-review", "gpt-5.6-luna", "gpt-5.6-luna[1m]", "gpt-5.6-luna-review", "gpt-daybreak-blue-latest", "gpt-reserve", "codex-auto-review", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2", "gpt-image-1.5", "gpt-5.6-sol-image", "gpt-5.6-terra-image", "gpt-5.6-luna-image", "transcribe"},
+	"codex":       {"gpt-6.1-sol", "gpt-6-astra", "gpt-6-astra[1m]", "gpt-6-sol", "gpt-6-sol[1m]", "gpt-6-luna", "gpt-6-luna[1m]", "gpt-5.6-sol", "gpt-5.6-sol[1m]", "gpt-5.6-sol-review", "gpt-5.6-terra", "gpt-5.6-terra[1m]", "gpt-5.6-terra-review", "gpt-5.6-luna", "gpt-5.6-luna[1m]", "gpt-5.6-luna-review", "gpt-daybreak-blue-latest", "gpt-reserve", "codex-auto-review", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2", "gpt-image-1.5", "gpt-5.6-sol-image", "gpt-5.6-terra-image", "gpt-5.6-luna-image", "transcribe"},
 	"cohere":      {"command-r-plus-08-2024", "command-r-08-2024", "command-a-03-2025"},
 	"comfyui":     {"flux-dev", "sdxl"},
 	"tokenharbor": {"claude-opus-5.5", "claude-sonnet-5", "gpt-6-astra", "gpt-6-sol", "grok-4.7", "mimo-v2.6-flash:free", "mimo-v2.5:free", "qwen3.8-flash:free", "deepseek-v4.1-flash:free", "deepseek-v4-flash:free"},
@@ -75,7 +78,7 @@ var ProviderModels = map[string][]string{
 	"commandcode": {"deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash", "moonshotai/Kimi-K3.1-Pro", "moonshotai/Kimi-K2.7-Code", "moonshotai/Kimi-K2.7-Code-Highspeed", "moonshotai/Kimi-K2.6", "moonshotai/Kimi-K2.5", "zai-org/GLM-5.2", "zai-org/GLM-5.2-Fast", "zai-org/GLM-5.1", "zai-org/GLM-5", "MiniMaxAI/MiniMax-M3", "MiniMaxAI/MiniMax-M2.7", "MiniMaxAI/MiniMax-M2.5", "xiaomi/mimo-v2.5-pro", "xiaomi/mimo-v2.5", "Qwen/Qwen3.6-Max-Preview", "Qwen/Qwen3.6-Plus", "Qwen/Qwen3.7-Max", "Qwen/Qwen3.7-Plus", "stepfun/Step-3.7-Flash", "stepfun/Step-3.5-Flash", "nvidia/nemotron-3-ultra-550b-a55b"},
 	"cu":          {"default", "claude-4.5-opus-high-thinking", "claude-4.5-opus-high", "claude-4.5-sonnet-thinking", "claude-4.5-sonnet", "claude-4.5-haiku", "claude-4.5-opus", "gpt-5.2-codex", "claude-4.6-opus-max", "claude-4.6-sonnet-medium-thinking", "kimi-k2.5", "gemini-3-flash-preview", "gpt-5.2", "gpt-5.3-codex"},
 	"cursor":      {"default", "claude-4.5-opus-high-thinking", "claude-4.5-opus-high", "claude-4.5-sonnet-thinking", "claude-4.5-sonnet", "claude-4.5-haiku", "claude-4.5-opus", "gpt-5.2-codex", "claude-4.6-opus-max", "claude-4.6-sonnet-medium-thinking", "kimi-k2.5", "gemini-3-flash-preview", "gpt-5.2", "gpt-5.3-codex"},
-	"cx":          {"gpt-6.1-sol", "gpt-6-astra", "gpt-6-astra[1m]", "gpt-6-sol", "gpt-6-sol[1m]", "gpt-6-luna", "gpt-6-luna[1m]", "gpt-5.6-sol", "gpt-5.6-sol[1m]", "gpt-5.6-sol-review", "gpt-5.6-terra", "gpt-5.6-terra[1m]", "gpt-5.6-terra-review", "gpt-5.6-luna", "gpt-5.6-luna[1m]", "gpt-5.6-luna-review", "gpt-daybreak-blue-latest", "gpt-reserve", "codex-auto-review", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2", "gpt-image-1.5", "gpt-5.6-sol-image", "gpt-5.6-terra-image", "gpt-5.6-luna-image", "transcribe"},
+	"cx":          {"gpt-6.1-sol", "gpt-6-astra", "gpt-6-astra[1m]", "gpt-6-sol", "gpt-6-sol[1m]", "gpt-6-luna", "gpt-6-luna[1m]", "gpt-5.6-sol", "gpt-5.6-sol[1m]", "gpt-5.6-sol-review", "gpt-5.6-terra", "gpt-5.6-terra[1m]", "gpt-5.6-terra-review", "gpt-5.6-luna", "gpt-5.6-luna[1m]", "gpt-5.6-luna-review", "gpt-daybreak-blue-latest", "gpt-reserve", "codex-auto-review", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2", "gpt-image-1.5", "gpt-5.6-sol-image", "gpt-5.6-terra-image", "gpt-5.6-luna-image", "transcribe"},
 	"deepgram":    {"nova-3", "nova-2", "whisper-large", "nova"},
 	"deepseek":    {"deepseek-v4-pro", "deepseek-v4-pro-max", "deepseek-v4-pro-none", "deepseek-v4.1-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "deepseek-flash", "deepseek-chat", "deepseek-reasoner"},
 	// deepseek-web mirrors OmniRoute
@@ -134,6 +137,11 @@ var ProviderModels = map[string][]string{
 	"featherless": {"deepseek-ai/DeepSeek-V4-Pro", "deepseek-ai/DeepSeek-V4-Flash", "zai-org/GLM-5.2", "zai-org/GLM-5.1", "moonshotai/Kimi-K2.7-Code", "moonshotai/Kimi-K2.6", "moonshotai/Kimi-K2.5"},
 	"fireworks":   {"accounts/fireworks/models/deepseek-v3p1", "accounts/fireworks/models/llama-v3p3-70b-instruct", "accounts/fireworks/models/qwen3-235b-a22b", "nomic-ai/nomic-embed-text-v1.5"},
 	"fl":          {"deepseek-ai/DeepSeek-V4-Pro", "deepseek-ai/DeepSeek-V4-Flash", "zai-org/GLM-5.2", "zai-org/GLM-5.1", "moonshotai/Kimi-K2.7-Code", "moonshotai/Kimi-K2.6", "moonshotai/Kimi-K2.5"},
+	// Free-pi seeds exactly one id — the one its CLI defaults to
+	// (MODEL_ID in free-pi-cli src/provider.ts).
+	"free-pi": {"deepseek/deepseek-v4-flash"},
+	"fp":      {"deepseek/deepseek-v4-flash"},
+	"freepi":  {"deepseek/deepseek-v4-flash"},
 	// ElevenLabs declares one catalogue for both service kinds, so the STT ids
 	// sit beside the TTS ones (open-sse/providers/registry/elevenlabs.js models[]).
 	"elevenlabs": {"eleven_multilingual_v2", "eleven_turbo_v2_5", "scribe_v1", "scribe_v2"},
@@ -191,7 +199,7 @@ var ProviderModels = map[string][]string{
 	"minimax-cn":          {"MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "speech-2.8-hd", "speech-2.8-turbo", "speech-2.6-hd", "speech-2.6-turbo", "speech-02-hd", "speech-02-turbo", "speech-01-hd", "speech-01-turbo"},
 	"minimax-code":        {"MiniMax-M3.1-Flash-Preview", "MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"},
 	"minimax-code-global": {"MiniMax-M3.1-Flash-Preview", "MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"},
-	"mistral":             {"mistral-large-latest", "pixtral-large-latest", "mistral-small-latest", "codestral-latest", "mistral-medium-latest", "ministral-8b-latest", "ministral-3b-latest", "mistral-saba-latest", "pixtral-12b-2409", "codestral-mamba-latest", "mistral-moderation-latest", "mistral-embed"},
+	"mistral":             {"mistral-large-latest", "mistral-large-4", "deepseek-v4-1-flash-1017", "zai-glm-5-3-flash", "zai-glm-5-3", "glm-5-2", "devstral-latest", "codestral-latest", "codestral-2508", "mistral-small-latest", "mistral-small-4", "mistral-medium-latest", "mistral-medium-2604", "ministral-8b-latest", "ministral-3b-latest", "ministral-14b-2512", "magistral-medium-latest", "labs-leanstral-1-5-1", "pixtral-large-latest", "pixtral-12b-2409", "mistral-saba-latest", "codestral-mamba-latest", "mistral-moderation-latest", "mistral-embed"},
 	"muse":                {"muse-spark-1.3", "muse-spark-1.2", "muse-spark-1.1", "muse-spark-1.3-contributor", "muse-spark-1.2-contributor"},
 	"mmf":                 {"mimo-auto"},
 	"morph":               {"morph-v3-large", "morph-v3-fast", "morph-qwen35-397b", "morph-minimax27-230b", "morph-qwen36-27b", "morph-dsv4flash"},
@@ -237,7 +245,7 @@ var ProviderModels = map[string][]string{
 	"selfhosted-embedding": {"embedding"},
 	"selfhosted-stt":       {"whisper-1"},
 	"selfhosted-tts":       {"kokoro"},
-	"sensenova":            {"sensenova-6.8-flash-lite", "sensenova-u1.5-lite", "sensenova-u1.5-fast", "deepseek-v4-flash", "deepseek-flash", "glm-5.2", "kimi-k3"},
+	"sensenova":            {"sensenova-6.8-flash", "sensenova-6.8-flash-lite", "sensenova-u1.5-lite", "sensenova-u1.5-fast", "deepseek-v4-flash", "deepseek-flash", "glm-5.3", "glm-5.2", "kimi-k3"},
 	"siliconflow":          {"deepseek-ai/DeepSeek-V4-Pro", "deepseek-ai/DeepSeek-V4-Flash", "deepseek-ai/DeepSeek-V3.2", "deepseek-ai/DeepSeek-V3.2-Exp", "deepseek-ai/DeepSeek-V3.1", "deepseek-ai/DeepSeek-V3.1-Terminus", "deepseek-ai/DeepSeek-R1", "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.5-122B-A10B", "zai-org/GLM-5.1", "zai-org/GLM-5", "moonshotai/Kimi-K2.6", "moonshotai/Kimi-K2.5", "openai/gpt-oss-120b", "MiniMaxAI/MiniMax-M2.5", "inclusionAI/Ling-flash-2.0"},
 	"stability":            {"stable-image-ultra", "stable-image-core", "sd3.5-large", "sd3.5-large-turbo", "sd3.5-medium"},
 	"stability-ai":         {"stable-image-ultra", "stable-image-core", "sd3.5-large", "sd3.5-large-turbo", "sd3.5-medium"},
@@ -765,6 +773,10 @@ var ProviderModelKinds = map[string]map[string]string{
 // "tts", ...) or "" when the model is a plain LLM entry. Unknown providers or
 // models return "" so callers can fall back to the id heuristic upstream also
 // uses for dynamic catalogs.
+// serviceKindTTS is the ProviderModelKinds value for speech synthesis. The
+// string is the stored wire value and must not change.
+const serviceKindTTS = "tts"
+
 func GetProviderModelKind(aliasOrID, modelID string) string {
 	if byModel, ok := ProviderModelKinds[aliasOrID]; ok {
 		if kind, ok := byModel[modelID]; ok {

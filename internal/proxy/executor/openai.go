@@ -192,6 +192,7 @@ func DowngradeJsonSchemaToJSONObject(body []byte) []byte {
 	}
 	return body
 }
+
 // normalizeGroqGPTOSSRequest patches a Groq gpt-oss request so strict JSON
 // validation survives the model's Harmony reasoning channel. Groq answers
 // 400 json_validate_failed ("Failed to validate JSON") when a structured
@@ -274,7 +275,6 @@ func isGroqGPTOSSModel(model string) bool {
 	lower := strings.ToLower(strings.TrimSpace(model))
 	return strings.Contains(lower, "gpt-oss")
 }
-
 
 // ForwardOpenAI sends an OpenAI-format request and writes the response.
 func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
@@ -461,11 +461,9 @@ func sseStream(o sseStreamOpts) error {
 						doneSent = true
 						return
 					}
-					if ttft != nil && *ttft == 0 {
-						*ttft = time.Since(startTime).Milliseconds()
-					}
+					markTTFT(&Request{TTFT: ttft, StartTime: startTime}, startTime)
 					if buf != nil {
-						buf.Write(ev.Payload)
+						_, _ = buf.Write(ev.Payload)
 					}
 					var line []byte
 					if ev.Type != "" {
@@ -509,11 +507,9 @@ func sseStream(o sseStreamOpts) error {
 		composerDecoder := &composerThinkingDecoder{}
 		patchers = append(patchers, composerDecoder.Process)
 		return proxy.SSECopy(hw, upstream, flusher, func(chunk []byte) {
-			if ttft != nil && *ttft == 0 {
-				*ttft = time.Since(startTime).Milliseconds()
-			}
+			markTTFT(&Request{TTFT: ttft, StartTime: startTime}, startTime)
 			if buf != nil {
-				buf.Write(chunk)
+				_, _ = buf.Write(chunk)
 			}
 			captureUsageFromSSEChunk(ctx, chunk)
 		}, patchers...)
@@ -540,11 +536,9 @@ func sseStream(o sseStreamOpts) error {
 		if bytes.Contains(translated, []byte("[DONE]")) {
 			finished = true
 		}
-		if ttft != nil && *ttft == 0 {
-			*ttft = time.Since(startTime).Milliseconds()
-		}
+		markTTFT(&Request{TTFT: ttft, StartTime: startTime}, startTime)
 		if buf != nil {
-			buf.Write(translated)
+			_, _ = buf.Write(translated)
 		}
 		hw.Write(translated)
 		if flusher != nil {
@@ -629,7 +623,7 @@ func jsonResponse(ctx context.Context, w http.ResponseWriter, upstream io.Reader
 			return &proxy.ZeroContentError{Body: body}
 		}
 		// The last member of a combo serves its zero-content response normally (FR3).
-	} else if err := proxy.EmptyUpstreamError(body); err != nil {
+	} else if err := proxy.EmptyUpstreamError(body); err != nil && !proxy.EmptyCompletionAllowed(ctx) {
 		return err
 	}
 

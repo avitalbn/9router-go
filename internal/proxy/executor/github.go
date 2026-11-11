@@ -193,7 +193,7 @@ func forwardGithubResponses(w http.ResponseWriter, req *Request) error {
 	body := req.Body
 	if clientFormatFor(reqCtx(req)) != providers.FormatOpenAIResponses {
 		// Chat Completions client — translate to Responses API wire format.
-		transformed, _, err := buildResponsesRequest(req.Body, false)
+		transformed, _, err := buildResponsesBody(req.Body)
 		if err != nil {
 			return fmt.Errorf("ForwardGithub transform body: %w", err)
 		}

@@ -16,7 +16,7 @@ func forwardOpenAIResponses(w http.ResponseWriter, req *Request) error {
 	native := clientFormatFor(reqCtx(req)) == providers.FormatOpenAIResponses
 	if !native {
 		var err error
-		body, _, err = buildResponsesRequest(body, false)
+		body, _, err = buildResponsesBody(body)
 		if err != nil {
 			return fmt.Errorf("ForwardOpenAI responses body: %w", err)
 		}

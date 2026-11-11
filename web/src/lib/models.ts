@@ -64,6 +64,7 @@ export const PROVIDER_ID_TO_ALIAS: Record<string, string> = {
   "featherless": "fl",
   "fireworks": "fireworks",
   "fish-audio": "fish-audio",
+  "free-pi": "fp",
   "freebuff": "fb",
   "gemini": "gemini",
   "gemini-cli": "gc",
@@ -243,6 +244,15 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     }
   ],
   "freebuff": FREEBUFF_MODELS,
+  // Seed only the model free-pi-cli itself defaults to. The real, server-chosen
+  // catalogue arrives from GET /client-version at sign-in and is stored per
+  // connection, so listing more here would advertise ids upstream may not serve.
+  "free-pi": [
+    {
+      "id": "deepseek/deepseek-v4-flash",
+      "name": "DeepSeek V4 Flash"
+    }
+  ],
   "alicode-intl": [
     {
       "id": "qwen3.5-plus",
@@ -1126,6 +1136,14 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "id": "codex-auto-review",
       "name": "Codex Auto Review",
       "upstreamModelId": "codex-auto-review"
+    },
+    {
+      "id": "gpt-image-2.6-flare",
+      "name": "GPT Image 2.6 Flare"
+    },
+    {
+      "id": "gpt-image-2.6-sunburst",
+      "name": "GPT Image 2.6 Sunburst"
     },
     {
       "id": "gpt-image-2.5",
@@ -3520,20 +3538,52 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "name": "Mistral Large 3"
     },
     {
-      "id": "pixtral-large-latest",
-      "name": "Pixtral Large"
+      "id": "mistral-large-4",
+      "name": "Mistral Large 4"
     },
     {
-      "id": "mistral-small-latest",
-      "name": "Mistral Small 3"
+      "id": "deepseek-v4-1-flash-1017",
+      "name": "DeepSeek V4.1 Flash 1017"
+    },
+    {
+      "id": "zai-glm-5-3-flash",
+      "name": "Z.ai GLM 5.3 Flash"
+    },
+    {
+      "id": "zai-glm-5-3",
+      "name": "Z.ai GLM 5.3"
+    },
+    {
+      "id": "glm-5-2",
+      "name": "GLM 5.2"
+    },
+    {
+      "id": "devstral-latest",
+      "name": "Devstral 2"
     },
     {
       "id": "codestral-latest",
       "name": "Codestral"
     },
     {
+      "id": "codestral-2508",
+      "name": "Codestral 25.08"
+    },
+    {
+      "id": "mistral-small-latest",
+      "name": "Mistral Small 3"
+    },
+    {
+      "id": "mistral-small-4",
+      "name": "Mistral Small 4"
+    },
+    {
       "id": "mistral-medium-latest",
       "name": "Mistral Medium 3"
+    },
+    {
+      "id": "mistral-medium-2604",
+      "name": "Mistral Medium 3.5"
     },
     {
       "id": "ministral-8b-latest",
@@ -3544,12 +3594,28 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
       "name": "Ministral 3B"
     },
     {
-      "id": "mistral-saba-latest",
-      "name": "Mistral Saba"
+      "id": "ministral-14b-2512",
+      "name": "Ministral 14B"
+    },
+    {
+      "id": "magistral-medium-latest",
+      "name": "Magistral Medium"
+    },
+    {
+      "id": "labs-leanstral-1-5-1",
+      "name": "Leanstral 1.5"
+    },
+    {
+      "id": "pixtral-large-latest",
+      "name": "Pixtral Large"
     },
     {
       "id": "pixtral-12b-2409",
       "name": "Pixtral 12B"
+    },
+    {
+      "id": "mistral-saba-latest",
+      "name": "Mistral Saba"
     },
     {
       "id": "codestral-mamba-latest",
@@ -3894,6 +3960,28 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {
       "id": "gpt-image-2.5",
       "name": "GPT Image 2.5",
+      "params": [
+        "n",
+        "size",
+        "quality",
+        "response_format"
+      ],
+      "kind": "image"
+    },
+    {
+      "id": "gpt-image-2.6-flare",
+      "name": "GPT Image 2.6 Flare",
+      "params": [
+        "n",
+        "size",
+        "quality",
+        "response_format"
+      ],
+      "kind": "image"
+    },
+    {
+      "id": "gpt-image-2.6-sunburst",
+      "name": "GPT Image 2.6 Sunburst",
       "params": [
         "n",
         "size",
@@ -5040,6 +5128,10 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
   ],
   "sensenova": [
     {
+      "id": "sensenova-6.8-flash",
+      "name": "SenseNova 6.8 Flash"
+    },
+    {
       "id": "sensenova-6.8-flash-lite",
       "name": "SenseNova 6.8 Flash Lite"
     },
@@ -5076,6 +5168,10 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
     {
       "id": "deepseek-flash",
       "name": "DeepSeek V4.1 Flash"
+    },
+    {
+      "id": "glm-5.3",
+      "name": "GLM-5.3"
     },
     {
       "id": "glm-5.2",
