@@ -16,6 +16,7 @@ func (g *agent) deploy(ctx context.Context, next Active, s Snapshot) error {
 }
 func (g *agent) deployWith(ctx context.Context, next Active, s Snapshot, change func() error) error {
 	c := g.config
+	previousStatus := g.status
 	defer func() { _ = os.Remove(c.state("drain")) }()
 	if err := drain(ctx, c); err != nil {
 		return err
@@ -36,6 +37,7 @@ func (g *agent) deployWith(ctx context.Context, next Active, s Snapshot, change 
 		if err := restore(c, pending); err != nil {
 			return fmt.Errorf("rollback failed: %w", err)
 		}
+		g.status = previousStatus
 		g.process, err = startChild(c, g.active)
 		if err != nil {
 			return err
@@ -66,6 +68,14 @@ func (g *agent) deployWith(ctx context.Context, next Active, s Snapshot, change 
 		}
 		if local.Hash != s.Hash {
 			return rollback(fmt.Errorf("post-apply managed hash mismatch"))
+		}
+	}
+	// Persist the acknowledged baseline while rollback is still possible. A
+	// crash between acknowledgement and journal removal restores both together.
+	if s.Tables != nil {
+		g.status.Commit = next.Commit
+		if err = g.acknowledge(s); err != nil {
+			return rollback(err)
 		}
 	}
 	// Clear the journal before allowing credential refresh/ordinary traffic.

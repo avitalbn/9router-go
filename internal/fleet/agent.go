@@ -135,7 +135,7 @@ func (g *agent) sync(ctx context.Context) error {
 	}
 	bundle, s, err := Receive(ctx, c)
 	if err != nil {
-		return err
+		return g.upgradeHelperForSchema(ctx, bundle, err)
 	}
 	if c.Role == Follower {
 		g.status.ForkHead = bundle.ForkHead

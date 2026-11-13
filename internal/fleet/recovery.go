@@ -27,6 +27,11 @@ func prepareBackup(ctx context.Context, c DeviceConfig, before, after Active) (P
 	if err := WriteJSON(filepath.Join(dir, "active.json"), before); err != nil {
 		return p, err
 	}
+	for _, name := range []string{"status.json", "managed-connections.json"} {
+		if err := copyPrivate(c.state(name), filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
+			return p, err
+		}
+	}
 	return p, WriteJSON(c.state("pending.json"), p)
 }
 func restore(c DeviceConfig, p Pending) error {
@@ -55,6 +60,16 @@ func restore(c DeviceConfig, p Pending) error {
 	}
 	if err := WriteJSON(c.state("active.json"), p.Before); err != nil {
 		return err
+	}
+	for _, name := range []string{"status.json", "managed-connections.json"} {
+		if err := copyPrivate(filepath.Join(p.BackupDir, name), c.state(name)); err != nil {
+			if !os.IsNotExist(err) {
+				return err
+			}
+			if err = os.Remove(c.state(name)); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
 	}
 	return os.Remove(c.state("pending.json"))
 }
