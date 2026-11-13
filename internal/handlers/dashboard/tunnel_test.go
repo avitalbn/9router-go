@@ -24,6 +24,9 @@ func stubTailscaleHost(t *testing.T, bin string, exec func(ctx context.Context, 
 }
 
 func TestHandleTunnelEndpoints(t *testing.T) {
+	// Runtime tunnel state is outside the fixture SQLite DB. Never read or
+	// overwrite the operator's actual state while testing dashboard handlers.
+	t.Setenv("DATA_DIR", t.TempDir())
 	repo, cleanup := setupTestDB(t)
 	defer cleanup()
 

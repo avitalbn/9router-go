@@ -35,6 +35,7 @@
   import UpdateModal from './components/UpdateModal.svelte'
   import type { SystemVersionInfo } from './api/client'
   import Toasts from './lib/ui/Toasts.svelte'
+  import FleetBanner from './components/FleetBanner.svelte'
   import { notifications } from './lib/notifications'
   import TerminalView from './components/TerminalView.svelte'
   import TokenSaverView from './components/TokenSaverView.svelte'
@@ -535,6 +536,7 @@
 
       <main class="flex-1 overflow-y-auto custom-scrollbar p-6 lg:p-10">
         <div class="max-w-7xl mx-auto">
+          <FleetBanner />
           {#if isLoading}
             <div class="flex flex-col items-center justify-center h-[70vh] gap-3 text-text-muted">
               <Loader2 class="w-7 h-7 animate-spin text-brand-500" />

@@ -1,0 +1,73 @@
+name: Fork fleet
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+concurrency:
+  group: fork-fleet
+  cancel-in-progress: false
+jobs:
+  build:
+    if: github.repository == 'avitalbn/9router-go'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Build dashboard with locked dependencies
+        working-directory: web
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+          bun run ratchet:svelte
+      - name: Test
+        env:
+          CGO_ENABLED: '0'
+        run: go test -count=1 -timeout 10m ./...
+      - name: Build immutable fleet artifacts
+        env:
+          CGO_ENABLED: '0'
+          GOAMD64: v1
+          SOURCE_COMMIT: ${{ github.sha }}
+          BUILD_SEQUENCE: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p fleet-dist
+          version="$(cat VERSION)"
+          targets="$(sed -n 's/^CROSS_TARGETS *:= *//p' Makefile)"
+          for pair in $targets; do
+            suffix=""
+            [ "${pair%-*}" != windows ] || suffix=.exe
+            for kind in 9router-go 9router-fleet; do
+              GOOS="${pair%-*}" GOARCH="${pair#*-}" go build -trimpath -buildvcs=true +                -ldflags="-s -w -X 9router/proxy/internal/updater.CurrentVersion=$version -X 9router/proxy/internal/updater.DefaultUpdateURL= -X 9router/proxy/internal/updater.DefaultGitHubRepo=" +                -o "fleet-dist/$kind-$pair$suffix" "./cmd/$kind/"
+            done
+          done
+          ./fleet-dist/9router-fleet-linux-amd64 manifest --assets fleet-dist +            --commit "$SOURCE_COMMIT" --sequence "$BUILD_SEQUENCE" --out fleet-dist/manifest.json
+      - name: Attest binaries and manifest without private repository keys
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: fleet-dist/*
+      - name: Publish immutable release, then candidate pointer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          tag="fleet-$SOURCE_COMMIT"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" fleet-dist/* --target "$SOURCE_COMMIT" +              --title "Fleet $SOURCE_COMMIT" --notes "Fork-only build; authority verifies GitHub provenance before promotion." --prerelease
+          fi
+          if ! gh release view fleet-candidate >/dev/null 2>&1; then
+            gh release create fleet-candidate --target "$SOURCE_COMMIT" +              --title "Fleet candidate channel" --notes "Mutable manifest pointer; artifacts remain commit-addressed." --prerelease
+          fi
+          gh release upload fleet-candidate fleet-dist/manifest.json --clobber

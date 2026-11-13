@@ -15,6 +15,7 @@ import (
 
 	"9router/proxy/internal/config"
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/fleetmode"
 	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/headroom"
 	"9router/proxy/internal/providers"
@@ -101,36 +102,48 @@ func ProvideServer(p ServerParams) *http.Server {
 	// stopped, so the requests that were just served still drain into the
 	// log.
 	var stopAudit func()
+	backgroundReady := make(chan struct{})
 
 	p.Lifecycle.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
-			autoUpdate := p.CLIParams.AutoUpdate
-			if !autoUpdate && p.Repo != nil {
-				if settings, sErr := p.Repo.GetSettings(); sErr == nil && settings != nil {
-					autoUpdate = settings.AutoUpdate
+			startBackground := func() {
+				defer close(backgroundReady)
+				if !fleetmode.AwaitProbation(shutdown.Context()) {
+					return
 				}
-			}
-			updater.StartBackgroundCheck(shutdown.Context(), autoUpdate)
-			log.Printf("[config] auto-update enabled=%v", autoUpdate)
+				autoUpdate := p.CLIParams.AutoUpdate
+				if !autoUpdate && p.Repo != nil {
+					if settings, sErr := p.Repo.GetSettings(); sErr == nil && settings != nil {
+						autoUpdate = settings.AutoUpdate
+					}
+				}
+				updater.StartBackgroundCheck(shutdown.Context(), autoUpdate)
+				log.Printf("[config] auto-update enabled=%v", autoUpdate)
 
-			catalogPath := filepath.Join(filepath.Dir(p.Config.DatabasePath), "model-catalog.json")
-			providers.StartBackgroundCatalogSync(shutdown.Context(), nil, catalogPath)
-			oauth.StartBackgroundRefresh(shutdown.Context(), p.Repo)
-			db.StartRetentionLoop(shutdown.Context(), p.Repo, db.DefaultRequestDetailRetention)
-			// The Gemini Web session cookie is renewed by the site every few
-			// minutes, and the renewed value is what keeps a signed-in
-			// account reaching the models it pays for. Without this loop the
-			// credential has to be pasted again every few minutes.
-			executor.StartGeminiWebRotation(shutdown.Context(), p.Repo)
-			startAutoPingScheduler(shutdown.Context(), p.Repo, p.ChatHandler)
-			startModelHealthScheduler(shutdown.Context(), p.Repo, p.ChatHandler)
-			startUptimeHeartbeat(shutdown.Context(), p.Repo)
-			startHeadroomOnBoot(p.Repo, config.ResolveDataDir())
-			// The tamper-evident audit trail: one writer goroutine, a bounded
-			// queue, and the retention sweeper when a window is configured.
-			// It is started here rather than in a provider because it must run
-			// before the server accepts traffic but after the database is up.
-			stopAudit = startAuditTrail(p.Repo)
+				catalogPath := filepath.Join(filepath.Dir(p.Config.DatabasePath), "model-catalog.json")
+				providers.StartBackgroundCatalogSync(shutdown.Context(), nil, catalogPath)
+				oauth.StartBackgroundRefresh(shutdown.Context(), p.Repo)
+				db.StartRetentionLoop(shutdown.Context(), p.Repo, db.DefaultRequestDetailRetention)
+				// The Gemini Web session cookie is renewed by the site every few
+				// minutes, and the renewed value is what keeps a signed-in
+				// account reaching the models it pays for. Without this loop the
+				// credential has to be pasted again every few minutes.
+				executor.StartGeminiWebRotation(shutdown.Context(), p.Repo)
+				startAutoPingScheduler(shutdown.Context(), p.Repo, p.ChatHandler)
+				startModelHealthScheduler(shutdown.Context(), p.Repo, p.ChatHandler)
+				startUptimeHeartbeat(shutdown.Context(), p.Repo)
+				startHeadroomOnBoot(p.Repo, config.ResolveDataDir())
+				// The tamper-evident audit trail: one writer goroutine, a bounded
+				// queue, and the retention sweeper when a window is configured.
+				// It is started here rather than in a provider because it must run
+				// before the server accepts traffic but after the database is up.
+				stopAudit = startAuditTrail(p.Repo)
+			}
+			if fleetmode.Probation() {
+				go startBackground()
+			} else {
+				startBackground()
+			}
 
 			log.Printf("9router-go Proxy (%s) starting on port %d", updater.CurrentVersion, p.Config.Port)
 
@@ -151,6 +164,7 @@ func ProvideServer(p ServerParams) *http.Server {
 			// upstream body, handlers emit a final [DONE], and Shutdown completes well
 			// within its deadline instead of waiting out the full timeout.
 			shutdown.Cancel()
+			<-backgroundReady
 
 			// Refuse NEW keep-alive reuse immediately: idle browser/dashboard
 			// connections otherwise hold Shutdown for the full deadline even

@@ -9,6 +9,7 @@ import (
 	"go.uber.org/fx"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/fleetmode"
 	"9router/proxy/internal/handlers"
 	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/middleware"
@@ -77,6 +78,7 @@ func ProvideRouter(repo *db.Repo, ts *handlers.TokenSaverConfig) (*chi.Mux, *cha
 	r.Use(middleware.MaxBodyByPath(middleware.DefaultMaxBodySize, middleware.MediaBodyLimitRules()))
 	r.Use(chiMiddleware.Recoverer)
 	r.Use(middleware.RequestLogger)
+	r.Use(fleetmode.Guard)
 
 	engineChatH := handlers.SetupServerRouter(r, repo, ts)
 	return r, engineChatH
