@@ -1,0 +1,17 @@
+[Unit]
+Description=Fork-managed 9router-go fleet supervisor
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/9router-go-fleet/bootstrap/9router-fleet launch --config %h/.local/share/9router-go-fleet/device.json
+Restart=always
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=40
+UMask=0077
+
+[Install]
+WantedBy=default.target

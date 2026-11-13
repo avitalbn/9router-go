@@ -491,10 +491,13 @@ func decodeObject(raw string) (map[string]any, bool) {
 // on a database built by an older fixture, which is why a failed query
 // degrades to "no sealed credentials" instead of failing the read.
 func (r *Repo) hydrate(conn *models.ProviderConnection) {
-	if conn == nil || !r.sealingEnabled() {
+	if conn == nil {
 		return
 	}
-	conn.Data = r.openConnectionData(conn.ID, conn.Data, r.sealedPairFor(conn.ID))
+	if r.sealingEnabled() {
+		conn.Data = r.openConnectionData(conn.ID, conn.Data, r.sealedPairFor(conn.ID))
+	}
+	applyFleetReadiness(conn)
 }
 
 // sealedPairFor reads all three sealed column pairs for one row.

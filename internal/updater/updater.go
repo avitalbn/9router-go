@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/daemon"
+	"9router/proxy/internal/fleetmode"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/shutdown"
 	"github.com/samber/lo"
@@ -163,6 +164,9 @@ var githubReleasesAPI = lo.CoalesceOrEmpty(os.Getenv("UPSTREAM_API_BASE"), "http
 // update` outright. A manifest without a digest therefore falls through to the
 // GitHub Releases API, and its version metadata is used only if that fails too.
 func CheckUpdate(ctx context.Context) (*UpdateInfo, error) {
+	if fleetmode.Enabled() {
+		return &UpdateInfo{CurrentVersion: CurrentVersion, LatestVersion: CurrentVersion, OS: runtime.GOOS, Arch: runtime.GOARCH, Source: "fleet"}, nil
+	}
 	updateURL := lo.CoalesceOrEmpty(os.Getenv("UPDATE_URL"), DefaultUpdateURL)
 	repo := lo.CoalesceOrEmpty(os.Getenv("UPDATE_REPO"), DefaultGitHubRepo)
 	// An unconfigured channel is a fork that links both defaults empty, not a
@@ -410,6 +414,9 @@ var selfExecutable = os.Executable
 // The downloaded asset (after archive extraction) is verified against expectedSHA256 before the binary is written
 // to disk, and a mismatch aborts the update and keeps the running binary intact.
 func PerformSelfUpdate(downloadURL, expectedSHA256 string) error {
+	if fleetmode.Enabled() {
+		return fmt.Errorf("binary updates are owned by the fleet supervisor")
+	}
 	if downloadURL == "" {
 		return fmt.Errorf("missing download URL for platform %s_%s", runtime.GOOS, runtime.GOARCH)
 	}
@@ -692,6 +699,10 @@ func ComputeSHA256(data []byte) string {
 
 // StartBackgroundCheck initiates recurring background update check and executes auto-update when enabled.
 func StartBackgroundCheck(ctx context.Context, initialAutoUpdate bool) {
+	if fleetmode.Enabled() {
+		SetAutoUpdate(false)
+		return
+	}
 	SetAutoUpdate(initialAutoUpdate)
 
 	// Check custom interval from env

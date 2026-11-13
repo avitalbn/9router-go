@@ -283,6 +283,15 @@ func (r *Repo) GetProviderConnections(provider string, activeOnly bool) ([]*mode
 	for _, conn := range connections {
 		r.hydrate(conn)
 	}
+	if activeOnly {
+		ready := connections[:0]
+		for _, conn := range connections {
+			if conn.IsActive == 1 {
+				ready = append(ready, conn)
+			}
+		}
+		connections = ready
+	}
 
 	return connections, nil
 }

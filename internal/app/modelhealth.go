@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/fleetmode"
 	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlers/media"
 	"9router/proxy/internal/modelhealth"
@@ -32,6 +33,9 @@ import (
 // handler: there is nothing to probe without a lane to probe through. It is
 // bound to the shutdown context, so it stops with the other background loops.
 func startModelHealthScheduler(ctx context.Context, repo *db.Repo, chatH *chat.ChatHandler) {
+	if fleetmode.Role() == "follower" {
+		return
+	}
 	if repo == nil || chatH == nil {
 		return
 	}

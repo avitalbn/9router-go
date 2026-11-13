@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"9router/proxy/internal/fleetmode"
 	"9router/proxy/internal/log"
 )
 
@@ -431,6 +432,9 @@ func SyncModelCatalog(ctx context.Context, client *http.Client, filePath string)
 // StartBackgroundCatalogSync runs initial sync and 24h timer loop.
 func StartBackgroundCatalogSync(ctx context.Context, client *http.Client, filePath string) {
 	_ = LoadCatalogFromFile(filePath)
+	if fleetmode.Role() == "follower" {
+		return
+	}
 
 	go func() {
 		// Wait 30s after boot for first sync

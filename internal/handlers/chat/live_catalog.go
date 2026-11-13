@@ -18,6 +18,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"9router/proxy/internal/constants"
+	"9router/proxy/internal/fleetmode"
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
@@ -130,6 +131,11 @@ func pinnedEnabledModels(cd *shared.ConnectionData) bool {
 // when the provider has no live resolver or discovery failed. Callers fall back
 // to the static registry, exactly like upstream's `live?.models?.length` guard.
 func (h *ChatHandler) resolveLiveCatalog(ctx context.Context, conn *models.ProviderConnection, connData *shared.ConnectionData, providerID string) []LiveModel {
+	// A probation health read must not rotate a credential that rollback would
+	// replace with its pre-deployment value.
+	if fleetmode.Probation() {
+		return nil
+	}
 	if conn == nil || connData == nil {
 		return nil
 	}

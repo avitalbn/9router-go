@@ -38,7 +38,11 @@ func TestRecordConnectionAccountBanFailure_EscalatesAndClears(t *testing.T) {
 		if got < wantWindow-30*time.Second || got > wantWindow+30*time.Second {
 			t.Errorf("streak %d park window = %s, want about %s", i+1, got, wantWindow)
 		}
-		if !prev.IsZero() && !until.After(prev) {
+		// At the capped duration two calls may observe the same clock tick
+		// (notably on Windows). Growing windows must grow; a capped window
+		// must not move backwards.
+		growing := i > 0 && wantWindow > want[i-1]
+		if !prev.IsZero() && (until.Before(prev) || (growing && !until.After(prev))) {
 			t.Errorf("streak %d park until %s does not outlast streak %d (%s)", i+1, until, i, prev)
 		}
 		prev = until

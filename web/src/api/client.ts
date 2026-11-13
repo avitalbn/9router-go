@@ -1,3 +1,18 @@
+export interface FleetStatus {
+  role: '' | 'authority' | 'follower'
+  runningCommit: string
+  authorityUrl: string
+  probation: boolean
+  draining: boolean
+  sync?: {
+    revision: number
+    hash: string
+    lastSuccess: string
+    lastError?: string
+    codeError?: string
+  }
+}
+
 export interface DatabaseStats {
   databaseSizeBytes: number
   reclaimableBytes: number
@@ -1999,6 +2014,7 @@ export const api = {
 
   // Settings
   getSettings: () => request<Settings>('/api/settings'),
+  getFleetStatus: () => request<FleetStatus>('/api/fleet/status'),
   updateSettings: (settings: Partial<Settings> | Record<string, unknown>) =>
     request<{ success: boolean }>('/api/settings', {
       method: 'PUT',

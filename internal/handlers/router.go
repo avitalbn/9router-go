@@ -4,6 +4,7 @@ import (
 	"9router/proxy/internal/clientconfig"
 	"9router/proxy/internal/constants"
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/fleetmode"
 	"9router/proxy/internal/guardrails"
 	"9router/proxy/internal/handlers/batches"
 	"9router/proxy/internal/handlers/chat"
@@ -231,6 +232,7 @@ func SetupRoutes(r interface {
 // browser session, a valid API key or the local CLI token through when login is
 // enabled (upstream dashboardGuard).
 func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) {
+	r.Get("/api/fleet/status", fleetmode.Status)
 	var ts *TokenSaverConfig
 	if chatH != nil {
 		ts = chatH.TokenSaver
