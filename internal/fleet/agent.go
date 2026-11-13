@@ -3,6 +3,7 @@ package fleet
 import (
 	"context"
 	"debug/buildinfo"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -19,6 +20,7 @@ var ErrRolledBack = errors.New("candidate rolled back")
 type SyncStatus struct {
 	Role           Role   `json:"role"`
 	Commit         string `json:"commit"`
+	ForkHead       string `json:"forkHead,omitempty"`
 	Epoch          string `json:"epoch"`
 	Revision       uint64 `json:"revision"`
 	Hash           string `json:"hash"`
@@ -36,8 +38,8 @@ type agent struct {
 	lastCode time.Time
 }
 
-func netDial(c DeviceConfig) (net.Conn, error) {
-	return net.DialTimeout("tcp", net.JoinHostPort(c.Host, fmt.Sprint(c.Port)), time.Second)
+func netDial(ctx context.Context, c DeviceConfig) (net.Conn, error) {
+	return (&net.Dialer{Timeout: time.Second}).DialContext(ctx, "tcp", net.JoinHostPort(c.Host, fmt.Sprint(c.Port)))
 }
 func initialActive(c DeviceConfig) (Active, error) {
 	var a Active
@@ -77,8 +79,8 @@ func Run(ctx context.Context, c DeviceConfig) error {
 	if err != nil {
 		return err
 	}
-	if conn, err := netDial(c); err == nil {
-		conn.Close()
+	if conn, err := netDial(ctx, c); err == nil {
+		_ = conn.Close()
 		return fmt.Errorf("port is already occupied; stop the previous gateway supervisor before enrollment")
 	}
 	g := &agent{config: c, active: a}
@@ -128,9 +130,16 @@ func Run(ctx context.Context, c DeviceConfig) error {
 func (g *agent) sync(ctx context.Context) error {
 	c := g.config
 	g.status.LastCheck = time.Now().UTC().Format(time.RFC3339)
+	if err := g.applyQueuedBinding(ctx); err != nil {
+		return err
+	}
 	bundle, s, err := Receive(ctx, c)
 	if err != nil {
 		return err
+	}
+	if c.Role == Follower {
+		g.status.ForkHead = bundle.ForkHead
+		g.status.CodeError = bundle.CodeError
 	}
 	if s.Revision < g.status.Revision {
 		return fmt.Errorf("refusing stale configuration revision")
@@ -146,12 +155,25 @@ func (g *agent) sync(ctx context.Context) error {
 	code := bundle.Release
 	if c.Role == Authority && time.Since(g.lastCode) > 5*time.Minute && c.CandidateURL != "" {
 		g.lastCode = time.Now()
+		head, headErr := forkHead(ctx)
+		if headErr == nil {
+			g.status.ForkHead = head
+		}
 		candidate, fetchErr := FetchAttested(ctx, c, c.CandidateURL)
 		if fetchErr != nil {
 			g.status.CodeError = fetchErr.Error()
 		} else {
 			code = &candidate
 			g.status.CodeError = ""
+			var candidateRelease Release
+			if err := json.Unmarshal(candidate.Payload, &candidateRelease); err != nil {
+				return err
+			}
+			if headErr != nil {
+				g.status.CodeError = headErr.Error()
+			} else if candidateRelease.Commit != head {
+				g.status.CodeError = "Latest fork HEAD is awaiting a successful fleet build and canary"
+			}
 		}
 	}
 	if code != nil {
@@ -199,6 +221,13 @@ func (g *agent) sync(ctx context.Context) error {
 	return nil
 }
 func (g *agent) acknowledge(s Snapshot) error {
+	ids := []string{}
+	for _, row := range s.Tables["providerConnections"] {
+		ids = append(ids, fmt.Sprint(row["id"]))
+	}
+	if err := WriteJSON(g.config.state("managed-connections.json"), ids); err != nil {
+		return err
+	}
 	g.status.Revision = s.Revision
 	g.status.Hash = s.Hash
 	g.status.Commit = g.active.Commit

@@ -42,6 +42,8 @@ func run() error {
 	key := f.String("key-file", "", "private signing seed file (or FLEET_SIGNING_KEY environment)")
 	sequence := f.Uint64("sequence", 0, "monotonic build sequence (GitHub run id)")
 	snapshot := f.String("snapshot", "", "portable snapshot file for local rehearsal")
+	sourceID := f.String("source", "", "extra local login connection ID")
+	targetID := f.String("target", "", "fleet-managed connection ID")
 	if err := f.Parse(os.Args[2:]); err != nil {
 		return err
 	}
@@ -102,13 +104,20 @@ func run() error {
 		return nil
 	case "sign-release", "manifest":
 		return releaseFile(*assets, *commit, *sequence, *key, *out, command == "sign-release")
-	case "run", "export", "status":
+	case "run", "export", "status", "bind-credentials":
 		c, err := fleet.LoadConfig(*config)
 		if err != nil {
 			return err
 		}
 		if command == "run" {
 			return fleet.Run(ctx, c)
+		}
+		if command == "bind-credentials" {
+			if err = fleet.QueueBinding(c, fleet.CredentialBinding{Source: *sourceID, Target: *targetID}); err != nil {
+				return err
+			}
+			fmt.Println("Local credential binding queued for the next maintenance cycle")
+			return nil
 		}
 		if command == "export" {
 			b, err := fleet.Publish(ctx, c, *device)

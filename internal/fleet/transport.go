@@ -69,7 +69,7 @@ func localGet(ctx context.Context, c DeviceConfig, path string, v any) error {
 		}
 		var key string
 		err = db.QueryRowContext(ctx, "SELECT key FROM apiKeys WHERE isActive=1 AND COALESCE(keyHash,'')='' LIMIT 1").Scan(&key)
-		db.Close()
+		_ = db.Close()
 		if err != nil || key == "" {
 			return fmt.Errorf("models probation needs a local active plaintext probe key")
 		}
@@ -81,7 +81,7 @@ func localGet(ctx context.Context, c DeviceConfig, path string, v any) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("%s returned HTTP %d", path, resp.StatusCode)
 	}

@@ -48,6 +48,17 @@ keys and OAuth sessions are retained. New devices must authenticate their own
 accounts. Missing credentials disable only the effective local connection;
 the authority's desired enabled state stays intact.
 
+Some provider login flows derive a new connection ID from the new token. If
+login creates an extra local row, bind it onto the received definition:
+`9router-fleet bind-credentials --config <device.json> --source <new-login-id>
+--target <shared-connection-id>`. Use the IDs from the local authenticated
+`/api/connections` list. The helper queues a backed-up maintenance operation,
+requires the same provider/auth type, transfers only device-local credentials
+and account metadata, and removes only the extra login row. Shared names,
+IDs, priorities and model choices remain unchanged. It refuses to consume a
+fleet-managed source row. Allow the first configuration sync to finish before
+authenticating and binding accounts.
+
 An authority can explicitly authorize manual API-key bootstrap for selected
 recipients using `secretDevices`. This is opt-in, never exports OAuth tokens,
 and never overwrites an existing plaintext or sealed key. Authorize credential
@@ -56,6 +67,8 @@ distribution separately before enabling this option.
 Proxy URL user/password fields stay local. Configure credentials on each new
 device before enabling an authenticated proxy. Strict-proxy configuration is
 preserved; missing proxy prerequisites are not an instruction to bypass it.
+Credential-bearing arbitrary headers or URL query parameters are refused by
+the portable-policy validator instead of being silently distributed.
 
 Follower catalog downloads and automatic model-health policy writers are
 disabled; the authority publishes these decisions. Transient availability,
@@ -189,7 +202,8 @@ database can contain stale OAuth refresh tokens and may need reauthentication.
   authorization and runtime records survive. It never sends a database.
 - `9router-fleet status --config <device.json>` prints safe sync status.
 - Authenticated `GET /api/fleet/status` reports running commit, role, current
-  revision/hash, last success/error, active requests and maintenance gates.
+  revision/hash, latest observed fork HEAD, last success/error, active requests
+  and maintenance gates. A failed/pending fork build is reported explicitly.
   The dashboard displays the same fleet status and authority link.
 
 Keep the entire private fleet root for recovery: signing keys, epoch,

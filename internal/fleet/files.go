@@ -17,7 +17,7 @@ func WritePrivate(path string, b []byte) error {
 		return err
 	}
 	tmp := f.Name()
-	defer os.Remove(tmp)
+	defer func() { _ = os.Remove(tmp) }()
 	if err = f.Chmod(0600); err == nil {
 		_, err = f.Write(b)
 	}
@@ -45,7 +45,7 @@ func ReadJSON(path string, v any) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	d := json.NewDecoder(io.LimitReader(f, 32<<20))
 	d.DisallowUnknownFields()
 	if err = d.Decode(v); err != nil {

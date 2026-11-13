@@ -13,7 +13,7 @@ func Lock(path string) (func(), error) {
 		return nil, err
 	}
 	if err = unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, err
 	}
 	return func() { _ = unix.Flock(int(f.Fd()), unix.LOCK_UN); _ = f.Close() }, nil

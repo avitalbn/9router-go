@@ -31,7 +31,7 @@ type Snapshot struct {
 var sharedSettings = words("providerStrategies comboStrategies providerThinking providerOverrides capacityAdapter forceFallback rtkEnabled cavemanEnabled cavemanLevel ponytailEnabled ponytailLevel adhdEnabled adhdLevel enableObservability observabilityMode headroomCodeAware claudeCacheTtl modelHealth")
 var localSettings = words("password oidcClientSecret audit_chain_key autoUpdate requireApiKey headroomEnabled headroomUrl outboundProxyEnabled outboundProxyUrl maxRequestRecords retentionDays usageHistoryRetentionDays tailscaleEnabled tailscaleUrl tunnelDashboardAccess tunnelEnabled tunnelUrl navVisibility displayCurrency animationLevel requireLogin oidcEnabled oidcIssuer oidcClientId oidcAllowedEmails oidcRedirectUri")
 var connectionPolicy = words("globalPriority defaultModel proxyPoolId prefix baseUrl inferenceBaseUrl nodeName apiType enabledModels connectionProxyEnabled connectionProxyUrl connectionNoProxy connectionProxyPoolId strictProxy vercelRelayUrl region mediaEnabled isMediaActive disabledKinds assignedModel allowPrivateNetworking")
-var runtimeFields = words("accessToken refreshToken idToken apiKey expiresAt expiresIn lastRefreshAt tokenType scope projectId email displayName status testStatus lastError lastErrorAt lastErrorModel lastErrorSource errorCode backoffLevel consecutiveUseCount lastUsedAt rateLimitedUntil oauthFailureCount oauthLockedUntil accountBanFailureCount accountLockedUntil")
+var runtimeFields = words("accessToken refreshToken idToken authToken cookie sessionToken apiKey expiresAt expiresIn lastRefreshAt tokenType scope projectId email displayName status testStatus lastError lastErrorAt lastErrorModel lastErrorSource errorCode backoffLevel consecutiveUseCount lastUsedAt rateLimitedUntil oauthFailureCount oauthLockedUntil accountBanFailureCount accountLockedUntil")
 var localAccountFields = words("authMethod chatgptAccountId chatgptPlanType copilotToken copilotTokenExpiresAt email githubEmail githubLogin githubName githubUserId organizationId projectId systemId userId")
 var nodeFields = words("prefix apiType baseUrl mediaEnabled isMediaActive disabledKinds")
 var poolFields = words("name proxyUrl noProxy strictProxy type")
@@ -174,7 +174,7 @@ func (s Snapshot) Validate() error {
 			return err
 		}
 	}
-	return nil
+	return portablePolicy(s)
 }
 
 func policyData(table string, data Object) (Object, error) {

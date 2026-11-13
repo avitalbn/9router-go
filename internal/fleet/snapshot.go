@@ -29,8 +29,8 @@ func Open(path string, readOnly bool) (*sql.DB, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	if _, err = db.Exec("PRAGMA busy_timeout=5000"); err != nil {
-		db.Close()
+	if _, err = db.ExecContext(context.Background(), "PRAGMA busy_timeout=5000"); err != nil {
+		_ = db.Close()
 		return nil, err
 	}
 	return db, nil
@@ -42,12 +42,12 @@ func Export(ctx context.Context, path, epoch string) (Snapshot, error) {
 	if err != nil {
 		return out, err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return out, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var raw string
 	if err = tx.QueryRowContext(ctx, "SELECT data FROM settings WHERE id=1").Scan(&raw); err != nil {
 		return out, err
@@ -100,21 +100,22 @@ func Export(ctx context.Context, path, epoch string) (Snapshot, error) {
 		if err != nil {
 			return out, err
 		}
+		defer func() { _ = rows.Close() }()
 		out.KV[scope] = map[string]json.RawMessage{}
 		for rows.Next() {
 			var k, v string
 			if err = rows.Scan(&k, &v); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return out, err
 			}
 			if !json.Valid([]byte(v)) {
-				rows.Close()
+				_ = rows.Close()
 				return out, fmt.Errorf("invalid JSON in %s", scope)
 			}
 			out.KV[scope][k] = json.RawMessage(v)
 		}
 		err = rows.Err()
-		rows.Close()
+		_ = rows.Close()
 		if err != nil {
 			return out, err
 		}
@@ -138,12 +139,12 @@ func Export(ctx context.Context, path, epoch string) (Snapshot, error) {
 	return out, out.Validate()
 }
 
-func readRows(ctx context.Context, tx *sql.Tx, query string) ([]Object, error) {
-	rows, err := tx.QueryContext(ctx, query)
+func readRows(ctx context.Context, tx *sql.Tx, query string, args ...any) ([]Object, error) {
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	cols, err := rows.Columns()
 	if err != nil {
 		return nil, err

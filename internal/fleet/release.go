@@ -80,7 +80,7 @@ func FetchAttested(ctx context.Context, c DeviceConfig, uri string) (Signed, err
 	if err != nil {
 		return out, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return out, fmt.Errorf("candidate HTTP %d", resp.StatusCode)
 	}
@@ -176,7 +176,7 @@ func downloadAsset(ctx context.Context, a Asset, dest string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("artifact HTTP %d", resp.StatusCode)
 	}
@@ -185,7 +185,7 @@ func downloadAsset(ctx context.Context, a Asset, dest string) error {
 		return err
 	}
 	tmp := f.Name()
-	defer os.Remove(tmp)
+	defer func() { _ = os.Remove(tmp) }()
 	h := sha256.New()
 	n, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(resp.Body, 150<<20))
 	if err == nil && n >= 150<<20 {

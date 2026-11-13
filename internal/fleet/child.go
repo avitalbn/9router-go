@@ -28,14 +28,15 @@ func startChild(c DeviceConfig, a Active) (*child, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(a.Gateway)
+	// Its lifetime is ended explicitly by stopChild after request draining.
+	cmd := exec.CommandContext(context.Background(), a.Gateway)
 	quietCommand(cmd)
 	cmd.Dir = c.DataDir
 	cmd.Env = c.GatewayEnvironment()
 	cmd.Stdout = log
 	cmd.Stderr = log
 	if err = cmd.Start(); err != nil {
-		log.Close()
+		_ = log.Close()
 		return nil, err
 	}
 	out := &child{cmd: cmd, done: make(chan error, 1), log: log}
@@ -91,7 +92,7 @@ func shutdownGateway(ctx context.Context, c DeviceConfig) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("shutdown HTTP %d", resp.StatusCode)
 	}
@@ -102,7 +103,10 @@ func stopChild(c DeviceConfig, p *child) error {
 		return nil
 	}
 	select {
-	case <-p.done:
+	case err := <-p.done:
+		if err != nil {
+			return nil
+		} // A child already stopped needs no second signal.
 		return nil
 	default:
 	}
@@ -110,14 +114,19 @@ func stopChild(c DeviceConfig, p *child) error {
 	_ = shutdownGateway(ctx, c)
 	cancel()
 	select {
-	case <-p.done:
+	case err := <-p.done:
+		if err != nil {
+			return nil
+		} // Expected signal/exit status during explicit stop.
 		return nil
 	case <-time.After(15 * time.Second):
 		// This is the exact child we created, never a PID/name search.
 		if err := p.cmd.Process.Kill(); err != nil {
 			return err
 		}
-		<-p.done
+		if err := <-p.done; err != nil {
+			return nil
+		} // The owned process was killed.
 		return nil
 	}
 }

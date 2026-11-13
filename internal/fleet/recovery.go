@@ -78,11 +78,11 @@ func recoverDeployment(ctx context.Context, c DeviceConfig) error {
 			return err
 		}
 		for i := 0; i < 20; i++ {
-			conn, err := netDial(c)
+			conn, err := netDial(ctx, c)
 			if err != nil {
 				break
 			}
-			conn.Close()
+			_ = conn.Close()
 			if i == 19 {
 				return fmt.Errorf("gateway still listening during recovery")
 			}

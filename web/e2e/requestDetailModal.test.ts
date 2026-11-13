@@ -28,6 +28,7 @@ const SLOW = 20_000
 
 const DETAIL_ROW = {
   id: 'req-e2e-1',
+  requestId: 'trace-e2e-1',
   timestamp: '2026-10-27T05:00:00Z',
   provider: 'deepseek',
   model: 'deepseek-chat',

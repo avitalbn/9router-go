@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -45,7 +46,8 @@ func Dispatch(ctx context.Context, configPath, operation, device string) error {
 		if device != "" {
 			args = append(args, "--device", device)
 		}
-		cmd := exec.Command(exe, args...)
+		// Graceful child shutdown precedes forced cancellation below.
+		cmd := exec.CommandContext(context.Background(), exe, args...)
 		quietCommand(cmd)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -67,10 +69,15 @@ func Dispatch(ctx context.Context, configPath, operation, device string) error {
 				_ = shutdownGateway(context.Background(), c)
 			}
 			select {
-			case <-done:
+			case childErr := <-done:
+				if childErr != nil {
+					log.Printf("fleet helper stopped: %v", childErr)
+				}
 			case <-time.After(20 * time.Second):
 				_ = cmd.Process.Kill()
-				<-done
+				if childErr := <-done; childErr != nil {
+					log.Printf("fleet helper terminated: %v", childErr)
+				}
 			}
 			return nil
 		}

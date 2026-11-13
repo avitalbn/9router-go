@@ -12,3 +12,6 @@
 - Include local rollback, tampering, unknown-schema, ordering and credential
   preservation tests. Allow equal timestamps at the already capped ban window
   on Windows without weakening escalation assertions for growing windows.
+- Keep local reauthentication compatible with shared IDs through an explicit
+  same-provider credential-binding operation. Add a fresh-context dashboard
+  check and update the request-detail fixture to include its trace request ID.

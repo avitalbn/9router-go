@@ -44,12 +44,12 @@ func privateFingerprint(ctx context.Context, path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	result := Object{}
 	var raw string
 	if err = tx.QueryRowContext(ctx, "SELECT data FROM settings WHERE id=1").Scan(&raw); err != nil {

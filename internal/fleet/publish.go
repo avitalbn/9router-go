@@ -11,8 +11,10 @@ import (
 )
 
 type Bundle struct {
-	Snapshot Signed  `json:"snapshot"`
-	Release  *Signed `json:"release,omitempty"`
+	Snapshot  Signed  `json:"snapshot"`
+	Release   *Signed `json:"release,omitempty"`
+	ForkHead  string  `json:"forkHead,omitempty"`
+	CodeError string  `json:"codeError,omitempty"`
 }
 
 func Publish(ctx context.Context, c DeviceConfig, device string) (Bundle, error) {
@@ -65,6 +67,11 @@ func Publish(ctx context.Context, c DeviceConfig, device string) (Bundle, error)
 		return Bundle{}, err
 	}
 	result := Bundle{Snapshot: signed}
+	var status SyncStatus
+	if ReadJSON(c.state("status.json"), &status) == nil {
+		result.ForkHead = status.ForkHead
+		result.CodeError = status.CodeError
+	}
 	var release Signed
 	if err = ReadJSON(c.state("approved-release.json"), &release); err == nil {
 		result.Release = &release

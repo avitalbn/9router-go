@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -30,16 +31,16 @@ func Apply(ctx context.Context, path string, s Snapshot, dryRun bool) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if _, err = conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
 		return err
 	}
-	defer conn.ExecContext(context.Background(), "ROLLBACK")
+	defer func() { _, _ = conn.ExecContext(context.Background(), "ROLLBACK") }()
 	var settingsJSON string
 	if err = conn.QueryRowContext(ctx, "SELECT data FROM settings WHERE id=1").Scan(&settingsJSON); err != nil {
 		return err
@@ -107,7 +108,7 @@ func upsert(ctx context.Context, db *sql.Conn, table string, row Object, secrets
 	}
 	var created string
 	err := db.QueryRowContext(ctx, "SELECT createdAt FROM "+table+" WHERE id=?", row["id"]).Scan(&created)
-	if err != nil && err != sql.ErrNoRows {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
 	if created == "" {
@@ -116,7 +117,7 @@ func upsert(ctx context.Context, db *sql.Conn, table string, row Object, secrets
 	if table != "combos" {
 		var raw string
 		err := db.QueryRowContext(ctx, "SELECT data FROM "+table+" WHERE id=?", row["id"]).Scan(&raw)
-		if err != nil && err != sql.ErrNoRows {
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 		before := Object{}
@@ -134,7 +135,7 @@ func upsert(ctx context.Context, db *sql.Conn, table string, row Object, secrets
 			// Existing sealed credentials are preserved too: never overwrite a sealed
 			// slot merely because the plaintext payload is intentionally empty.
 			var sealed string
-			if err = db.QueryRowContext(ctx, "SELECT COALESCE(secretCiphertext,'') FROM providerConnections WHERE id=?", row["id"]).Scan(&sealed); err != nil && err != sql.ErrNoRows {
+			if err = db.QueryRowContext(ctx, "SELECT COALESCE(secretCiphertext,'') FROM providerConnections WHERE id=?", row["id"]).Scan(&sealed); err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return err
 			}
 			if key == "" && sealed == "" && row["authType"] == "apikey" {
@@ -195,7 +196,7 @@ func Backup(ctx context.Context, path, dest string) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	if err = os.MkdirAll(filepath.Dir(dest), 0700); err != nil {
 		return err
 	}

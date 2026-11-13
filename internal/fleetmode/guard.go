@@ -13,7 +13,7 @@ func drainTracked(r *http.Request) bool {
 	// along with inference; exclude only local probes, assets and read-only
 	// dashboard SSE streams that can safely close during maintenance.
 	switch r.URL.Path {
-	case "/", "/health", "/api/health", "/api/version", "/api/fleet/status", "/api/version/shutdown", "/api/usage/stream", "/usage/stream", "/api/console/logs/stream":
+	case "/", "/health", "/api/health", "/api/version", "/api/fleet/status", "/api/version/shutdown", "/api/usage/stream", "/usage/stream", "/api/translator/console-logs/stream":
 		return false
 	}
 	for _, prefix := range []string{"/assets/", "/providers/", "/fonts/"} {
@@ -43,10 +43,13 @@ func blockedMutation(r *http.Request) bool {
 		}
 	}
 	if strings.HasPrefix(p, "/api/connections") || strings.HasPrefix(p, "/api/providers") {
+		if p == "/api/providers/validate" {
+			return false
+		}
 		if strings.HasSuffix(p, "/test") || strings.HasSuffix(p, "/renew-deepseek") || strings.Contains(p, "/browser-login") || strings.Contains(p, "/import-chrome") {
 			return false
 		}
-		return !(r.Method == "PUT" && credentialWrite(r))
+		return r.Method != "PUT" || !credentialWrite(r)
 	}
 	return false
 }
@@ -81,7 +84,7 @@ func credentialWrite(r *http.Request) bool {
 	}
 	for k, v := range m {
 		switch k {
-		case "apiKey", "accessToken", "refreshToken", "idToken", "expiresAt", "expiresIn", "scope", "tokenType":
+		case "apiKey", "accessToken", "refreshToken", "idToken", "expiresAt", "expiresIn", "scope", "tokenType", "testStatus":
 		case "providerSpecificData":
 			nested, ok := v.(map[string]any)
 			if !ok {
@@ -111,7 +114,7 @@ func CredentialReady(authType, data string) bool {
 	if json.Unmarshal([]byte(data), &m) != nil {
 		return false
 	}
-	for _, k := range []string{"apiKey", "accessToken", "refreshToken", "cookie", "sessionToken"} {
+	for _, k := range []string{"apiKey", "accessToken", "refreshToken", "authToken", "cookie", "sessionToken"} {
 		if v, ok := m[k].(string); ok && strings.TrimSpace(v) != "" {
 			return true
 		}

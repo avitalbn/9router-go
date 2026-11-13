@@ -7,8 +7,16 @@ import (
 )
 
 func (g *agent) deploy(ctx context.Context, next Active, s Snapshot) error {
+	return g.deployWith(ctx, next, s, func() error {
+		if g.config.Role == Follower {
+			return Apply(ctx, g.config.DBPath(), s, false)
+		}
+		return nil
+	})
+}
+func (g *agent) deployWith(ctx context.Context, next Active, s Snapshot, change func() error) error {
 	c := g.config
-	defer os.Remove(c.state("drain"))
+	defer func() { _ = os.Remove(c.state("drain")) }()
 	if err := drain(ctx, c); err != nil {
 		return err
 	}
@@ -36,12 +44,10 @@ func (g *agent) deploy(ctx context.Context, next Active, s Snapshot) error {
 			return fmt.Errorf("last-good gateway recovery: %w", err)
 		}
 		_ = os.Remove(c.state("probation"))
-		return fmt.Errorf("%w: %v", ErrRolledBack, cause)
+		return fmt.Errorf("%w: %w", ErrRolledBack, cause)
 	}
-	if c.Role == Follower {
-		if err = Apply(ctx, c.DBPath(), s, false); err != nil {
-			return rollback(err)
-		}
+	if err = change(); err != nil {
+		return rollback(err)
 	}
 	if err = WriteJSON(c.state("active.json"), next); err != nil {
 		return rollback(err)

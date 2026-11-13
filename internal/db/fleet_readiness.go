@@ -16,6 +16,8 @@ func applyFleetReadiness(conn *models.ProviderConnection) {
 		return
 	}
 	m["fleetAuthenticationRequired"] = true
+	m["testStatus"] = "reauth_required"
+	m["lastError"] = "Authenticate this connection on this device; fleet credentials stay local."
 	if b, err := json.Marshal(m); err == nil {
 		conn.Data = string(b)
 	}
