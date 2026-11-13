@@ -94,7 +94,7 @@ func TestProbationReadsRemainAvailableWhileDrainMarkerExists(t *testing.T) {
 		}
 	}
 	h := Guard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
-	for _, path := range []string{"/health", "/api/settings", "/v1/models", "/api/fleet/status"} {
+	for _, path := range []string{"/health", "/api/settings", "/models", "/v1/models", "/api/fleet/status"} {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
 		if w.Code != 200 {

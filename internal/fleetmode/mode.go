@@ -105,7 +105,7 @@ func probationRead(r *http.Request) bool {
 		return false
 	}
 	switch r.URL.Path {
-	case "/", "/health", "/api/health", "/api/version", "/api/settings", "/api/fleet/status", "/v1/models":
+	case "/", "/health", "/api/health", "/api/version", "/api/settings", "/api/fleet/status", "/models", "/v1/models":
 		return true
 	}
 	return false
