@@ -48,10 +48,10 @@ jobs:
             suffix=""
             [ "${pair%-*}" != windows ] || suffix=.exe
             for kind in 9router-go 9router-fleet; do
-              GOOS="${pair%-*}" GOARCH="${pair#*-}" go build -trimpath -buildvcs=true +                -ldflags="-s -w -X 9router/proxy/internal/updater.CurrentVersion=$version -X 9router/proxy/internal/updater.DefaultUpdateURL= -X 9router/proxy/internal/updater.DefaultGitHubRepo=" +                -o "fleet-dist/$kind-$pair$suffix" "./cmd/$kind/"
+              GOOS="${pair%-*}" GOARCH="${pair#*-}" go build -trimpath -buildvcs=true -ldflags="-s -w -X 9router/proxy/internal/updater.CurrentVersion=$version -X 9router/proxy/internal/updater.DefaultUpdateURL= -X 9router/proxy/internal/updater.DefaultGitHubRepo=" -o "fleet-dist/$kind-$pair$suffix" "./cmd/$kind/"
             done
           done
-          ./fleet-dist/9router-fleet-linux-amd64 manifest --assets fleet-dist +            --commit "$SOURCE_COMMIT" --sequence "$BUILD_SEQUENCE" --out fleet-dist/manifest.json
+          ./fleet-dist/9router-fleet-linux-amd64 manifest --assets fleet-dist --commit "$SOURCE_COMMIT" --sequence "$BUILD_SEQUENCE" --out fleet-dist/manifest.json
       - name: Attest binaries and manifest without private repository keys
         uses: actions/attest-build-provenance@v2
         with:
@@ -65,9 +65,9 @@ jobs:
           set -euo pipefail
           tag="fleet-$SOURCE_COMMIT"
           if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" fleet-dist/* --target "$SOURCE_COMMIT" +              --title "Fleet $SOURCE_COMMIT" --notes "Fork-only build; authority verifies GitHub provenance before promotion." --prerelease
+            gh release create "$tag" fleet-dist/* --target "$SOURCE_COMMIT"   --title "Fleet $SOURCE_COMMIT" --notes "Fork-only build; authority verifies GitHub provenance before promotion." --prerelease
           fi
           if ! gh release view fleet-candidate >/dev/null 2>&1; then
-            gh release create fleet-candidate --target "$SOURCE_COMMIT" +              --title "Fleet candidate channel" --notes "Mutable manifest pointer; artifacts remain commit-addressed." --prerelease
+            gh release create fleet-candidate --target "$SOURCE_COMMIT"   --title "Fleet candidate channel" --notes "Mutable manifest pointer; artifacts remain commit-addressed." --prerelease
           fi
           gh release upload fleet-candidate fleet-dist/manifest.json --clobber
