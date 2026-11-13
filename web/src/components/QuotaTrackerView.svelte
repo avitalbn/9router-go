@@ -6,6 +6,7 @@
   // bulk turn off empty / on available, quota hide/show via settings,
   // and per-connection refresh/toggle/delete actions.
   import { onMount } from 'svelte'
+  import ClaudeCacheTtl from './quota/ClaudeCacheTtl.svelte'
   import {
     api,
     type CodexResetCredit,
@@ -50,6 +51,7 @@
     getConnectionsEmptyMessage,
     getConnectionsPaginationSummary,
     getHiddenQuotaRows,
+    groupConnectionsByProvider,
     getProviderOptions,
     getQuotaCache,
     getQuotaVisibilityKey,
@@ -158,20 +160,21 @@
 
   // Quota visibility (hidden rows), persisted via /api/settings quotaVisibility
   let quotaVisibility = $state<QuotaVisibility>({})
-  let autoPingMaps = $state<{ claude: Record<string, boolean>; codex: Record<string, boolean> }>({
+  type AutoPingProvider = 'claude' | 'codex' | 'commandcode-goat'
+  type AutoPingScheduleEntry = AutoPingSchedule | { enabled: false } | unknown
+  let autoPingMaps = $state<Record<AutoPingProvider, Record<string, boolean>>>({
     claude: {},
     codex: {},
+    'commandcode-goat': {},
   })
   // The schedule half of the same settings key. It is kept apart from
   // autoPingMaps because the two are independent: the switch says "ping this
   // account when its window resets", the schedule says "ping it at 09:30 /
   // 14:30 / 19:30". Writing one must not delete the other.
-  let autoPingSchedules = $state<{
-    claude: Record<string, AutoPingSchedule | { enabled: false } | unknown>
-    codex: Record<string, AutoPingSchedule | { enabled: false } | unknown>
-  }>({
+  let autoPingSchedules = $state<Record<AutoPingProvider, Record<string, AutoPingScheduleEntry>>>({
     claude: {},
     codex: {},
+    'commandcode-goat': {},
   })
 
   // The connection whose auto-ping settings are being edited. Null closes the
@@ -277,11 +280,21 @@
   const AUTO_PING_SETTINGS_KEYS: Record<string, string> = {
     claude: 'claudeAutoPing',
     codex: 'codexAutoPing',
+    'commandcode-goat': 'commandcode-goatAutoPing',
   }
 
   const AUTO_PING_TOOLTIPS: Record<string, string> = {
     claude: 'When your 5h quota runs out, auto-sends a request the moment it resets so a new window starts right away.',
     codex: 'Auto-starts the next 5h Codex window after reset by sending a tiny request. Consumes a small amount of quota.',
+    'commandcode-goat':
+      'Auto-starts the next 5h Command Code window after reset by sending a tiny request. Consumes a small amount of quota.',
+  }
+
+  // Auto-ping was oauth-only because claude and codex are. Command Code
+  // authenticates with a bearer key, so its row is eligible without oauth.
+  function supportsAutoPing(conn: ProviderConnection): boolean {
+    if (conn.provider === 'commandcode-goat') return true
+    return (conn.provider === 'claude' || conn.provider === 'codex') && conn.authType === 'oauth'
   }
 
   function kiroMethodLabel(conn: ProviderConnectionLike): string {
@@ -528,9 +541,9 @@
     const key = AUTO_PING_SETTINGS_KEYS[provider]
     if (!key) return
 
-    const currentConnections = autoPingMaps[provider as 'claude' | 'codex'] || {}
+    const currentConnections = autoPingMaps[provider as AutoPingProvider] || {}
     const nextConnections = { ...currentConnections, [connId]: enabled }
-    const nextSchedules = autoPingSchedules[provider as 'claude' | 'codex'] || {}
+    const nextSchedules = autoPingSchedules[provider as AutoPingProvider] || {}
 
     autoPingMaps = {
       ...autoPingMaps,
@@ -565,7 +578,7 @@
     autoPingEditing = null
     if (!conn) return
 
-    const provider = conn.provider as 'claude' | 'codex'
+    const provider = conn.provider as AutoPingProvider
     const key = AUTO_PING_SETTINGS_KEYS[provider]
     if (!key) return
 
@@ -863,6 +876,24 @@
     ) as ProviderConnection[],
   )
 
+  // Group the sorted rows by provider so the tracker reads as collapsible
+  // sections instead of one long flat list. Until the operator toggles a
+  // section, the first provider opens and the rest start collapsed.
+  let groupedConnections = $derived(groupConnectionsByProvider(sortedConnections))
+  let collapsedProviders = $state<Record<string, boolean> | null>(null)
+  let groupCollapsed = $derived.by<Record<string, boolean>>(() => {
+    if (collapsedProviders !== null) return collapsedProviders
+    const initial: Record<string, boolean> = {}
+    groupedConnections.forEach((group, index) => {
+      initial[group.provider] = index !== 0
+    })
+    return initial
+  })
+  function toggleProviderGroup(provider: string): void {
+    const base = groupCollapsed
+    collapsedProviders = { ...base, [provider]: !base[provider] }
+  }
+
   let hasEligibleConnections = $derived(totals.eligibleConnections > 0)
   let hasVisibleConnections = $derived(sortedConnections.length > 0)
   let emptyState = $derived(getConnectionsEmptyMessage(totals, providerFilter, accountFilter))
@@ -976,14 +1007,17 @@
         // two independent halves — the connections switch and the schedule map.
         const claudeConfig = raw?.claudeAutoPing as AutoPingSettings | undefined
         const codexConfig = raw?.codexAutoPing as AutoPingSettings | undefined
+        const commandCodeConfig = raw?.['commandcode-goatAutoPing'] as AutoPingSettings | undefined
 
         autoPingMaps = {
           claude: claudeConfig?.connections || {},
           codex: codexConfig?.connections || {},
+          'commandcode-goat': commandCodeConfig?.connections || {},
         }
         autoPingSchedules = {
           claude: claudeConfig?.schedules || {},
           codex: codexConfig?.schedules || {},
+          'commandcode-goat': commandCodeConfig?.schedules || {},
         }
       })
       .catch(() => {})
@@ -1268,9 +1302,41 @@
       <p class="mx-auto mt-2 max-w-md text-sm text-text-muted">{emptyState.description}</p>
     </div>
   {:else}
-    <!-- Provider cards: 2 columns, compact -->
-    <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
-      {#each sortedConnections as conn (conn.id)}
+    <!-- Provider groups: collapsible sections, two columns per section -->
+    <div class="space-y-5">
+      {#each groupedConnections as group (group.provider)}
+        <section>
+          <button
+            type="button"
+            onclick={() => toggleProviderGroup(group.provider)}
+            aria-expanded={!groupCollapsed[group.provider]}
+            class="mb-3 flex w-full items-center gap-2 rounded-lg px-1 py-1 text-left transition-colors hover:text-primary"
+          >
+            <span
+              class="material-symbols-outlined text-lg text-text-muted transition-transform {groupCollapsed[
+                group.provider
+              ]
+                ? ''
+                : 'rotate-90'}"
+            >
+              chevron_right
+            </span>
+            <img src={getIconPath(group.provider)} alt="" class="h-5 w-5 rounded" />
+            <span class="text-sm font-semibold text-text-main">{providerLabel(group.provider)}</span>
+            <span
+              class="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-text-muted"
+            >
+              {group.connections.length}
+            </span>
+          </button>
+          {#if !groupCollapsed[group.provider]}
+            {#if group.provider === 'claude'}
+              <div class="mb-3">
+                <ClaudeCacheTtl />
+              </div>
+            {/if}
+            <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+              {#each group.connections as conn (conn.id)}
         {@const isActive = isActiveConn(conn)}
         {@const quota = quotaData[conn.id]}
         {@const isLoading = quotaLoading[conn.id]}
@@ -1389,11 +1455,15 @@
                   </button>
                 {/if}
 
-                {#if (conn.provider === 'claude' || conn.provider === 'codex') && conn.authType === 'oauth'}
-                  {@const isAutoPingActive = autoPingMaps[conn.provider]?.[conn.id] === true}
+                {#if supportsAutoPing(conn)}
+                  {@const autoPingProvider = conn.provider as AutoPingProvider}
+                  {@const isAutoPingActive = autoPingMaps[autoPingProvider]?.[conn.id] === true}
                   {@const hasSchedule =
-                    (autoPingSchedules[conn.provider]?.[conn.id] as { enabled?: boolean } | undefined)
-                      ?.enabled === true}
+                    (
+                      autoPingSchedules[autoPingProvider]?.[conn.id] as
+                        | { enabled?: boolean }
+                        | undefined
+                    )?.enabled === true}
                   <button
                     type="button"
                     onclick={() => toggleAutoPing(conn.id, conn.provider, !isAutoPingActive)}
@@ -1531,6 +1601,10 @@
             {/if}
           </div>
         </div>
+              {/each}
+            </div>
+          {/if}
+        </section>
       {/each}
     </div>
 
@@ -1626,9 +1700,9 @@
   <AutoPingScheduleModal
     open
     connectionName={autoPingEditing.name}
-    reactive={autoPingMaps[autoPingEditing.provider as 'claude' | 'codex']?.[autoPingEditing.id] ===
+    reactive={autoPingMaps[autoPingEditing.provider as AutoPingProvider]?.[autoPingEditing.id] ===
       true}
-    schedule={(autoPingSchedules[autoPingEditing.provider as 'claude' | 'codex']?.[
+    schedule={(autoPingSchedules[autoPingEditing.provider as AutoPingProvider]?.[
       autoPingEditing.id
     ] as AutoPingSchedule | null) ?? null}
     timezone={localTimezone}

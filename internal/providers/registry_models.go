@@ -264,8 +264,8 @@ var ProviderModels = map[string][]string{
 	"vxp":                  {"deepseek-ai/deepseek-v3.2-maas", "qwen/qwen3-next-80b-a3b-thinking-maas", "qwen/qwen3-next-80b-a3b-instruct-maas", "zai-org/glm-5-maas"},
 	"xai":                  {"grok-4.7", "grok-4.6", "grok-4.5", "grok-4", "grok-4-fast-reasoning", "grok-code-fast-1", "grok-3", "grok-2-image-1212", "grok-imagine-video"},
 	"xiaomi-mimo":          {"mimo-x-pro-preview", "mimo-x-flash-preview", "mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-omni", "mimo-v2-flash", "mimo-v2.5-tts"},
-	"xiaomi-tokenplan":     {"mimo-v2.5-pro", "mimo-v2.5-pro-claude", "mimo-v2.5", "mimo-v2-pro", "mimo-v2-omni", "mimo-v2-tts", "mimo-v2.5-tts", "mimo-v2.5-tts-voiceclone", "mimo-v2.5-tts-voicedesign"},
-	"xmtp":                 {"mimo-v2.5-pro", "mimo-v2.5-pro-claude", "mimo-v2.5", "mimo-v2-pro", "mimo-v2-omni", "mimo-v2-tts", "mimo-v2.5-tts", "mimo-v2.5-tts-voiceclone", "mimo-v2.5-tts-voicedesign"},
+	"xiaomi-tokenplan":     {"mimo-v2.6-pro", "mimo-v2.6-flash", "mimo-v2.5-asr", "mimo-v2.5-tts", "mimo-v2.5-tts-voiceclone", "mimo-v2.5-tts-voicedesign"},
+	"xmtp":                 {"mimo-v2.6-pro", "mimo-v2.6-flash", "mimo-v2.5-asr", "mimo-v2.5-tts", "mimo-v2.5-tts-voiceclone", "mimo-v2.5-tts-voicedesign"},
 	"zcode":                {"glm-5.3", "glm-5.3-flash"},
 	"atmorouter":           {"cc/claude-sonnet-4-6", "cc/claude-opus-4-7", "cx/gpt-5.6-sol", "cb/gemini-3.1-pro", "cbcn/glm-5.3", "ali/kimi-k2.7-code", "ali/qwen3.8-max", "ali/deepseek-v4.1-flash"},
 	"runcrate":             {"deepseek-ai/DeepSeek-V4.1-Flash", "deepseek-ai/DeepSeek-V4.1-Flash-1017", "zai-org/GLM-5.3", "zai-org/GLM-5.3-Flash", "Qwen/Qwen3.8-Flash", "openai/gpt-oss-120b"},
@@ -602,7 +602,9 @@ var ProviderModelKinds = map[string]map[string]string{
 	},
 	"nvidia": {
 		"fastpitch":                    "tts",
+		"nv-embedqa-e5-v5":             "embedding",
 		"nvidia/nv-embedqa-e5-v5":      "embedding",
+		"parakeet-ctc-1.1b-asr":        "stt",
 		"nvidia/parakeet-ctc-1.1b-asr": "stt",
 		"tacotron2":                    "tts",
 	},
@@ -778,16 +780,33 @@ var ProviderModelKinds = map[string]map[string]string{
 const serviceKindTTS = "tts"
 
 func GetProviderModelKind(aliasOrID, modelID string) string {
-	if byModel, ok := ProviderModelKinds[aliasOrID]; ok {
+	lookup := func(providerKey string) string {
+		byModel, ok := ProviderModelKinds[providerKey]
+		if !ok {
+			return ""
+		}
 		if kind, ok := byModel[modelID]; ok {
 			return kind
 		}
-	}
-	if canon, ok := ProviderAliasMap[aliasOrID]; ok {
-		if byModel, ok := ProviderModelKinds[canon]; ok {
-			if kind, ok := byModel[modelID]; ok {
+		// Try stripped form if modelID carried provider prefix
+		if stripped := strings.TrimPrefix(modelID, providerKey+"/"); stripped != modelID {
+			if kind, ok := byModel[stripped]; ok {
 				return kind
 			}
+		}
+		// Try prefixed form if entry in map carries provider prefix
+		if kind, ok := byModel[providerKey+"/"+modelID]; ok {
+			return kind
+		}
+		return ""
+	}
+
+	if kind := lookup(aliasOrID); kind != "" {
+		return kind
+	}
+	if canon, ok := ProviderAliasMap[aliasOrID]; ok {
+		if kind := lookup(canon); kind != "" {
+			return kind
 		}
 	}
 	return ""

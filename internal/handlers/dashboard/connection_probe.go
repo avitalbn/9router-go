@@ -13,6 +13,7 @@ import (
 
 	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
@@ -919,7 +920,6 @@ func probeCloudCodeAssist(ctx context.Context, client *http.Client, provider, ac
 	}
 	message := providers.RedactAppealURLs(probeProviderErrorMessage(body, fmt.Sprintf("API returned %d", status)))
 	if providers.IsAntigravityTOSViolation(status, body) {
-		providers.TriggerProtectivePause(providers.DefaultProtectivePauseDuration)
 		if appealURL, _ := providers.ExtractAppealURL(body); appealURL != "" {
 			return oauthProbeAttempt{status: status, message: message, appealURL: appealURL}
 		}
@@ -1010,6 +1010,14 @@ func (h *DashboardHandler) persistProbeResult(conn *models.ProviderConnection, r
 		} else {
 			raw["lastError"] = nil
 			raw["lastErrorAt"] = nil
+		}
+		// A successful test connection proves the account is usable again, so
+		// drop the account-ban failure streak: the next ban starts from the
+		// base cooldown rather than climbing the ladder.
+		if conn != nil {
+			if clearErr := h.Repo.ClearConnectionAccountBanLock(conn.ID); clearErr != nil {
+				log.Warn("dashboard", "account ban clear failed", "conn", conn.ID, "error", clearErr)
+			}
 		}
 		if conn != nil && conn.Provider == "codex" {
 			chat.ClearCodexQuotaBlock(conn.ID)

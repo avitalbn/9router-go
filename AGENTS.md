@@ -21,16 +21,21 @@ For every user-reported malfunction, check whether the latest `luqman-v1/9router
 4. Only if the failure remains after that update and verification, report the evidence and offer a fork-specific fix. Do not implement that fix before the upstream-first check.
 
 ### Parity Protocol
-1. **Always Inspect Local Upstream First**:
+1. **Merged-Only Upstream Mandate (Strictly No Speculative Ports)**:
+   - **Port ONLY what is already merged** into upstream's default branch (`main`/`master`) or published in an upstream release tag.
+   - **STRICTLY FORBIDDEN**: Never port from open pull requests, draft PRs, speculative feature proposals, or unverified discussion issues (e.g. open feature threads or experimental detection-evasion ideas).
+   - **Why**: Unmerged upstream PRs and open proposals are unproven in production, frequently rejected upstream, or carry speculative headers/payloads that trigger provider WAF bans (such as GCP 403 on Antigravity or ad-gate lockouts on Free-Pi).
+   - If an issue or contributor requests a feature citing an open upstream PR/issue, refuse or defer it until upstream formally merges, tests, and verifies the change in production.
+2. **Always Inspect Local Upstream First**:
    - Before writing or modifying logic, inspect the corresponding code in `/Users/luqmannul.hakim/htdocs/9router`.
-   - Check upstream git history, PRs, issues, and vitest unit tests in `/Users/luqmannul.hakim/htdocs/9router/tests/` to understand edge cases, headers, and protocol nuances.
-2. **Behavioral Compatibility (100% Contract Match)**:
+   - Check upstream git history, PRs, issues, and vitest unit tests in `/Users/luqmannul.hakim/htdocs/9router/tests/` to understand edge cases, headers, and protocol nuances. Confirm that the reference commit is genuinely part of upstream `main` history (`git -C /Users/luqmannul.hakim/htdocs/9router branch --contains <commit>`).
+3. **Behavioral Compatibility (100% Contract Match)**:
    - Request and response schemas for `/v1/*` (Chat Completions, Messages, Embeddings, Audio, Models).
    - Dashboard endpoints `/api/*` (Connections, Combos, ProxyPools, Settings, ProviderNodes, Usage, Auth).
    - Combo expansion, model fallback, account rotation, and strike-breaker quota handling.
    - SQLite database compatibility (`~/.9router/db/data.sqlite`).
-3. **Changelog Tracking**:
-   - When porting features or fixes, reference the upstream commit/issue/PR in
+4. **Changelog Tracking**:
+   - When porting features or fixes, reference the upstream merged commit/PR in
      your `.changes/<pr-number>-<slug>.md` fragment (e.g. `upstream
      decolua/9router#4197 parity`). **Never write it into `CHANGELOG.md`** — see
      §7.6 for the rule and the reason behind it.
@@ -154,12 +159,18 @@ Every upstream provider in this repository (`antigravity`, `opencode`, `claude`,
 - **Clean JSON Serialization**:
   - Use accurate struct tags (`json:"fieldName,omitempty"`). Omit zero-value fields when required by upstream provider specs.
 
-### D. Code Style, Modularity & Cognitive Complexity
+### D. Code Style, Modularity & Concise Go (`github.com/samber/lo`)
+- **Concise & Expressive Functional Patterns (`github.com/samber/lo`)**:
+  - Always prefer [`github.com/samber/lo`](https://github.com/samber/lo) to eliminate verbose, handwritten loop boilerplate and multi-line conditional assignments. `samber/lo` is already a direct dependency in `go.mod`.
+  - **Slices & Collections**: Use `lo.Map`, `lo.Filter`, `lo.FilterMap`, `lo.FlatMap`, `lo.Contains`, `lo.Find`, `lo.Uniq`, `lo.GroupBy`, and `lo.KeyBy` instead of manual accumulator loops (`var out []T; for ... if ... out = append(out, ...)`).
+  - **Ternary & Defaults**: Use `lo.Ternary(cond, a, b)` instead of multi-line `if/else` variable assignments. Use `lo.Coalesce(val, fallback)` instead of cascading `if val != ""` fallback chains.
+  - **Pointers & References**: Use `lo.ToPtr(v)` and `lo.FromPtr(p)` (or `lo.FromPtrOr(p, defaultVal)`) instead of declaring temporary variables just to take their address (`tmp := v; &tmp`).
+  - **Maps & Sets**: Use `lo.Keys(m)`, `lo.Values(m)`, `lo.PickBy(m, predicate)`, `lo.Invert(m)`, and `lo.Assign(m1, m2)` instead of manual iteration to extract keys or merge maps.
+  - **Batching & Partitioning**: Use `lo.Chunk(slice, size)` and `lo.PartitionBy(slice, predicate)` for cleanly chunking or splitting items.
 - **Cognitive Complexity**: Maintain SonarQube cognitive complexity $\le 15$ per function/method.
 - **Guard Clauses**: Keep the happy path left-aligned using early returns. Avoid nested `if/else` ladders (3+ levels forbidden). Decompose branching into focused private helper functions.
 - **File Size Discipline**: Target files $\le 300$ LoC (modularize files $>400$ LoC into focused files or subpackages).
 - **Dependency Injection**: Use Uber Fx (`go.uber.org/fx`) in `internal/app/` for clean wiring. Usecases and handlers must never perform defensive `nil` checks on injected dependencies—fail fast during startup container initialization.
-- **Functional Helpers**: Prefer [`github.com/samber/lo`](https://github.com/samber/lo) (`lo.Map`, `lo.Filter`, `lo.Contains`, `lo.Ternary`, `lo.ToPtr`) for clean slice operations instead of handwritten boilerplate loops.
 
 ### E. Error Handling
 - **Wrap Errors with `%w`**: Always provide caller context: `fmt.Errorf("receiver.MethodName: %w", err)` or `fmt.Errorf("op: %w", err)`.
@@ -490,9 +501,10 @@ The screen stays for as long as the boot requests take, and the boot requests ar
 
 When tasked with syncing a feature, bugfix, or provider from upstream:
 
-1. **Investigate Upstream**:
+1. **Investigate Upstream (Merged Code Only)**:
+   - Verify that the commit or feature is **already merged into upstream's main branch** (`git -C /Users/luqmannul.hakim/htdocs/9router branch --contains <commit>`). Never sync from open PRs, draft PRs, or open proposal issues (§1).
    ```bash
-   # Check recent upstream commits, tags, or file changes
+   # Check recent upstream commits on main
    git -C /Users/luqmannul.hakim/htdocs/9router log -n 5 --oneline
    # Inspect specific upstream file or test
    cat /Users/luqmannul.hakim/htdocs/9router/open-sse/...

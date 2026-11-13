@@ -338,6 +338,16 @@ func (h *ChatHandler) handleAccountFallback(
 					log.Warn("fallback", "record connection error failed", "conn", connObj.ID, "error", recErr)
 				}
 			} else {
+				// Account-level bans (permanent/severe account failures) use the
+				// escalating lockout ladder keyed on the connection's consecutive
+				// failure streak instead of a flat 24h cooldown.
+				if providers.LooksLikeAccountDeactivated(errorText) {
+					if until, _, lockErr := h.Repo.RecordConnectionAccountBanFailure(connObj.ID); lockErr != nil {
+						log.Warn("fallback", "account ban lock failed", "conn", connObj.ID, "error", lockErr)
+					} else {
+						cooldownSec = int(until.Sub(time.Now().UTC()).Seconds())
+					}
+				}
 				until := time.Now().UTC().Add(time.Duration(cooldownSec) * time.Second)
 				if lockErr := h.Repo.LockConnectionRateLimit(connObj.ID, until, classification.NewBackoffLevel, ue.StatusCode, errorText); lockErr != nil {
 					log.Warn("fallback", "rate limit lock failed", "conn", connObj.ID, "error", lockErr)
@@ -748,7 +758,7 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 					pipedBody = out
 				}
 			}
-			pipedBody = translator.AnchorClaudeCache(pipedBody)
+			pipedBody = translator.AnchorClaudeCacheWithTTL(pipedBody, h.claudeCacheTTL())
 		}
 	}
 
@@ -1264,6 +1274,12 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 		if clearErr := h.Repo.ClearConnectionRateLimit(connectionID); clearErr != nil {
 			log.Warn("fallback", "rate limit clear failed", "conn", connectionID, "error", clearErr)
 		}
+		// A served request proves the account is usable again, so drop the
+		// account-ban failure streak: the next ban starts from the base
+		// cooldown rather than climbing the ladder.
+		if clearErr := h.Repo.ClearConnectionAccountBanLock(connectionID); clearErr != nil {
+			log.Warn("fallback", "account ban clear failed", "conn", connectionID, "error", clearErr)
+		}
 		// A served request proves the account is usable again, so drop any
 		// cached quota block rather than leaving it to expire on its own.
 		if provider == "codex" {
@@ -1456,6 +1472,16 @@ func recordPersonaInjection(origTokens, savedTokens *int, beforeLen, afterLen in
 	if *savedTokens < 0 {
 		*savedTokens = 0
 	}
+}
+
+// claudeCacheTTL is the operator's head-anchor prompt-cache window. It reads
+// through TokenSaver because that config is already the per-request settings
+// snapshot the chat handler refreshes after every dashboard save.
+func (h *ChatHandler) claudeCacheTTL() string {
+	if h.TokenSaver == nil {
+		return translator.ClaudeCacheTTL5m
+	}
+	return h.TokenSaver.ClaudeCacheTTL()
 }
 
 func (h *ChatHandler) applyTokenSavers(ctx context.Context, body []byte, claudeNative bool) ([]byte, int, int, int) {

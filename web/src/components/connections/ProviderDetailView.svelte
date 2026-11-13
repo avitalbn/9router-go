@@ -13,6 +13,7 @@
     type Settings
   } from '../../api/client'
   import { PROVIDER_CATALOG, PROVIDER_CATALOG_MAP, type ProviderCatalogItem } from '../../lib/providers'
+  import ClaudeCacheTtl from '../quota/ClaudeCacheTtl.svelte'
   import {
     clearCallback,
     CODEX_REDIRECT_URI,
@@ -3471,6 +3472,11 @@
     </div>
   </div>
 
+  <!-- Claude prompt-cache window: a billing knob that belongs on the provider page. -->
+  {#if providerId === 'claude'}
+    <ClaudeCacheTtl />
+  {/if}
+
   <!-- 1. Risk Notice (for OAuth / subscription providers) -->
   {#if hasRiskNotice}
     <div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-yellow-500/10 border border-yellow-500/30">
@@ -4966,7 +4972,7 @@
         Add Model
       </button>
 
-      {#if (providerId === 'cline' || providerId === 'clinepass' || providerId === 'qoder' || providerId === 'qoder-cn' || providerId === 'commandcode' || providerId === 'vercel-ai-gateway' || providerId === 'chutes' || providerId === 'nvidia' || providerId === 'ollama' || providerId === 'openrouter') && providerConnections.some((c) => c.isActive !== 0)}
+      {#if (providerId === 'cline' || providerId === 'clinepass' || providerId === 'qoder' || providerId === 'qoder-cn' || providerId === 'commandcode' || providerId === 'commandcode-goat' || providerId === 'vercel-ai-gateway' || providerId === 'chutes' || providerId === 'nvidia' || providerId === 'ollama' || providerId === 'openrouter') && providerConnections.some((c) => c.isActive !== 0)}
         <button
           type="button"
           onclick={handleImportLiveCatalogModels}
